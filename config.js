@@ -1,8 +1,8 @@
 // ============================================
 // CONFIG - Paste your Supabase credentials here
 // ============================================
-const SUPABASE_URL = "YOUR_SUPABASE_URL_HERE";      // e.g. https://abcdefghij.supabase.co
-const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY_HERE"; // the long string starting with eyJ...
+const SUPABASE_URL = "https://fyfzokpnvxnnfxyweduw.supabase.co";      // e.g. https://abcdefghij.supabase.co
+const SUPABASE_ANON_KEY = "sb_publishable_gGB2H7l5SB6vtEOiqtN5Fw_8QS5xsvj"; // the long string starting with eyJ...
 // ============================================
 
 const supaHeaders = {
