@@ -2,12 +2,11 @@
 // CONFIG - Paste your Supabase credentials here
 // ============================================
 const SUPABASE_URL = "https://fyfzokpnvxnnfxyweduw.supabase.co";      // e.g. https://abcdefghij.supabase.co
-const SUPABASE_ANON_KEY = "sb_publishable_gGB2H7l5SB6vtEOiqtN5Fw_8QS5xsvj"; // the long string starting with eyJ...
+const SUPABASE_ANON_KEY = "sb_publishable_gGB2H7l5SB6vtEOiqtN5Fw_8QS5xsvj"; // your publishable key (sb_publishable_...)
 // ============================================
 
 const supaHeaders = {
   "apikey": SUPABASE_ANON_KEY,
-  "Authorization": "Bearer " + SUPABASE_ANON_KEY,
   "Content-Type": "application/json",
   "Prefer": "return=representation"
 };
