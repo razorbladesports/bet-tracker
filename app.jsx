@@ -151,7 +151,8 @@ function BetRow({bet,isExp,onToggle,children}){
           {bet.tournament&&<span style={{fontSize:9,background:"#1a2e1a",color:"#22c55e",padding:"1px 5px",borderRadius:4,fontWeight:500}}>{bet.tournament}</span>}
         </div>
         <div style={{fontSize:14,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{em+" "}{bet.selection}</div>
-        {bet.marketType&&<div style={{fontSize:11,color:"#525280",marginTop:2}}>{bet.marketType}</div>}
+        {bet.awayTeam&&bet.homeTeam&&<div style={{fontSize:11,color:"#6b6b8a",marginTop:1}}>{bet.awayTeam+" @ "+bet.homeTeam}</div>}
+        {bet.marketType&&<div style={{fontSize:11,color:"#525280",marginTop:1}}>{bet.marketType}{bet.oddsAmer!=null?" · "+fmtOdds(bet.oddsAmer):""}{bet.stake!=null?" · $"+fmt(bet.stake):""}</div>}
       </div>
       <div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:13,fontFamily:"'JetBrains Mono',monospace",color:hasMB?"#818cf8":"#a0a0b8"}}>{fmtOdds(bet.oddsAmer)}{hasMB?" avg":""}</div><div style={{fontSize:12,color:"#6b6b8a"}}>{"$"+fmt(bet.stake)}</div></div>
       <div style={{textAlign:"right",minWidth:70,flexShrink:0}}>{isPend?<span style={{fontSize:12,color:"#3b82f6",fontWeight:500}}>PENDING</span>:<div style={{fontSize:14,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:rc}}>{fmtUsd(bet.netProfit)}</div>}</div>
