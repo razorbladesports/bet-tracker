@@ -86,7 +86,8 @@ function App(){
   useEffect(()=>{if(loaded)sv(KEYS.customTeams,customTeams);},[customTeams,loaded]);
   useEffect(()=>{if(loaded)sv(KEYS.customPlayers,customPlayers);},[customPlayers,loaded]);
   useEffect(()=>{if(loaded)sv(KEYS.customMarkets,customMarkets);},[customMarkets,loaded]);
-  const addBet=useCallback(bet=>setBets(p=>[{...bet,id:uid(),createdAt:new Date().toISOString()},...p]),[]);
+  const notifyBet=useCallback(bet=>{try{fetch(SUPABASE_URL+"/rest/v1/bet_emails",{method:"POST",headers:{...supaHeaders,"Prefer":"return=minimal"},body:JSON.stringify({bet_data:bet})}).catch(()=>{});}catch(e){}},[]);
+  const addBet=useCallback(bet=>{const nb={...bet,id:uid(),createdAt:new Date().toISOString()};setBets(p=>[nb,...p]);notifyBet(nb);},[notifyBet]);
   const updateBet=useCallback((id,u)=>setBets(p=>p.map(b=>b.id===id?{...b,...u,updatedAt:new Date().toISOString()}:b)),[]);
   const deleteBet=useCallback(id=>setBets(p=>p.filter(b=>b.id!==id)),[]);
   const settleBet=useCallback((id,result,cashout,gradeDate)=>{const sd=gradeDate||new Date().toISOString();setBets(p=>p.map(b=>{if(b.id!==id)return b;if(b.bookEntries&&b.bookEntries.length){const se=b.bookEntries.map(e=>({...e,result,netProfit:calc.netProfit(result,e.stake,e.toWin,cashout?cashout*e.stake/b.stake:null)}));return{...b,result,netProfit:se.reduce((s,e)=>s+(e.netProfit||0),0),cashoutAmount:cashout,settledAt:sd,bookEntries:se};}return{...b,result,netProfit:calc.netProfit(result,b.stake,b.toWin,cashout),cashoutAmount:cashout,settledAt:sd};}));},[]);
