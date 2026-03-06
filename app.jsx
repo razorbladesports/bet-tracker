@@ -182,13 +182,15 @@ function BetDetail({bet}){
 // ---- OPEN BETS (pending, grade here) ----
 function OpenBets({bets,allBets,filters,setFilters,books,holders,tags,settings,onSettle,onDelete,onEdit,onNew,onRepeat}){
   const[settleId,setSettleId]=useState(null);const[settleResult,setSettleResult]=useState("win");const[cashoutStr,setCashoutStr]=useState("");const[gradeDate,setGradeDate]=useState(nowET().slice(0,10));const[expandedId,setExpandedId]=useState(null);const[confirmDeleteId,setConfirmDeleteId]=useState(null);
-  const sorted=useMemo(()=>[...bets].sort((a,b)=>(b.placedAt||"").localeCompare(a.placedAt||"")),[bets]);
+  const grouped=useMemo(()=>{const s=[...bets].sort((a,b)=>(b.placedAt||"").localeCompare(a.placedAt||""));const eventKey=b=>(b.awayTeam&&b.homeTeam)?b.awayTeam+"@"+b.homeTeam:"";const groups=[];const seen={};s.forEach(b=>{const k=eventKey(b);if(k){if(!seen[k]){seen[k]={key:k,label:b.awayTeam+" @ "+b.homeTeam,bets:[]};groups.push(seen[k]);}seen[k].bets.push(b);}else{groups.push({key:b.id,label:null,bets:[b]});}});return groups;},[bets]);
   return(<div style={{paddingTop:20}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><h2 style={{margin:0,fontSize:18,fontWeight:600}}>Open Bets <span style={{color:"#3b82f6",fontWeight:400,fontSize:14}}>({bets.length})</span></h2><button onClick={onNew} style={BP}>+ New Bet</button></div>
     <FilterBar filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags} allBets={allBets}/>
-    {sorted.length===0?<div style={{textAlign:"center",padding:"60px 20px",color:"#525280"}}><div style={{fontSize:48,marginBottom:12}}>{"🟢"}</div><div>No open bets</div></div>:(
+    {grouped.length===0?<div style={{textAlign:"center",padding:"60px 20px",color:"#525280"}}><div style={{fontSize:48,marginBottom:12}}>{"🟢"}</div><div>No open bets</div></div>:(
       <div style={{display:"flex",flexDirection:"column",gap:6}}>
-        {sorted.map(bet=>{const isExp=expandedId===bet.id;const isSett=settleId===bet.id;return(
+        {grouped.map(g=>(<React.Fragment key={g.key}>
+          {g.label&&g.bets.length>1&&<div style={{fontSize:11,fontWeight:600,color:"#818cf8",padding:"8px 4px 2px",textTransform:"uppercase",letterSpacing:"0.5px"}}>{g.label} <span style={{color:"#525280",fontWeight:400}}>({g.bets.length})</span></div>}
+          {g.bets.map(bet=>{const isExp=expandedId===bet.id;const isSett=settleId===bet.id;return(
           <BetRow key={bet.id} bet={bet} isExp={isExp} onToggle={()=>setExpandedId(isExp?null:bet.id)}>
             <BetDetail bet={bet}/>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -206,6 +208,7 @@ function OpenBets({bets,allBets,filters,setFilters,books,holders,tags,settings,o
             </div>}
           </BetRow>
         );})}
+        </React.Fragment>))}
       </div>
     )}
   </div>);
