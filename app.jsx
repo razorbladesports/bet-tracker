@@ -186,7 +186,7 @@ function OpenBets({bets,allBets,filters,setFilters,books,holders,tags,settings,o
   const[settleId,setSettleId]=useState(null);const[settleResult,setSettleResult]=useState("win");const[cashoutStr,setCashoutStr]=useState("");const[gradeDate,setGradeDate]=useState(nowET().slice(0,10));const[expandedId,setExpandedId]=useState(null);const[confirmDeleteId,setConfirmDeleteId]=useState(null);const[showFutures,setShowFutures]=useState(false);
   const visibleBets=useMemo(()=>showFutures?bets.filter(b=>b.betType==="Futures"):bets.filter(b=>b.betType!=="Futures"),[bets,showFutures]);
   const futuresCount=useMemo(()=>bets.filter(b=>b.betType==="Futures").length,[bets]);
-  const grouped=useMemo(()=>{const s=[...visibleBets].sort((a,b)=>(b.placedAt||"").localeCompare(a.placedAt||""));const eventKey=b=>(b.awayTeam&&b.homeTeam)?b.awayTeam+"@"+b.homeTeam:"";const groups=[];const seen={};s.forEach(b=>{const k=eventKey(b);if(k){if(!seen[k]){seen[k]={key:k,label:b.awayTeam+" @ "+b.homeTeam,bets:[]};groups.push(seen[k]);}seen[k].bets.push(b);}else{groups.push({key:b.id,label:null,bets:[b]});}});return groups;},[bets]);
+  const grouped=useMemo(()=>{const s=[...visibleBets].sort((a,b)=>(b.placedAt||"").localeCompare(a.placedAt||""));const eventKey=b=>(b.awayTeam&&b.homeTeam)?b.awayTeam+"@"+b.homeTeam:"";const groups=[];const seen={};s.forEach(b=>{const k=eventKey(b);if(k){if(!seen[k]){seen[k]={key:k,label:b.awayTeam+" @ "+b.homeTeam,bets:[]};groups.push(seen[k]);}seen[k].bets.push(b);}else{groups.push({key:b.id,label:null,bets:[b]});}});return groups;},[visibleBets]);
   return(<div style={{paddingTop:20}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><h2 style={{margin:0,fontSize:18,fontWeight:600}}>Open Bets <span style={{color:"#3b82f6",fontWeight:400,fontSize:14}}>({visibleBets.length})</span></h2><div style={{display:"flex",gap:8,alignItems:"center"}}><button onClick={()=>setShowFutures(!showFutures)} style={{...BS,padding:"6px 12px",background:showFutures?"#2e2a1a":"transparent",color:showFutures?"#f59e0b":"#6b6b8a",border:"1px solid "+(showFutures?"#f59e0b44":"#1e1e2e"),fontSize:11,fontWeight:600}}>{showFutures?"← Bets":"Futures"}{!showFutures&&futuresCount>0&&<span style={{marginLeft:4,background:"#f59e0b33",color:"#f59e0b",borderRadius:6,padding:"0 5px",fontSize:10}}>{futuresCount}</span>}</button><button onClick={onNew} style={BP}>+ New Bet</button></div></div>
     <FilterBar filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags} allBets={allBets}/>
@@ -388,42 +388,62 @@ function Sec({c,label,children}){return(<div style={{background:"#111118",border
 // ---- LEDGER (non-sports gambling) ----
 const LEDGER_CATS=["Contest","Casino","Horse Racing","Poker","Other"];
 function Ledger({entries,setEntries}){
-  const[date,setDate]=useState(nowET().slice(0,10));const[cat,setCat]=useState(LEDGER_CATS[0]);const[desc,setDesc]=useState("");const[amountIn,setAmountIn]=useState("");const[amountOut,setAmountOut]=useState("");const[filterCat,setFilterCat]=useState("");const[confirmDel,setConfirmDel]=useState(null);
-  const addEntry=()=>{const buyIn=parseFloat(amountIn)||0;const payout=parseFloat(amountOut)||0;if(!desc.trim()&&!buyIn&&!payout)return;setEntries(p=>[{id:uid(),date,category:cat,description:desc.trim(),buyIn,payout,net:Math.round((payout-buyIn)*100)/100,createdAt:new Date().toISOString()},...p]);setDesc("");setAmountIn("");setAmountOut("");};
-  const filtered=useMemo(()=>filterCat?entries.filter(e=>e.category===filterCat):entries,[entries,filterCat]);
-  const sorted=useMemo(()=>[...filtered].sort((a,b)=>(b.date||"").localeCompare(a.date||"")),[filtered]);
-  const totals=useMemo(()=>{const t={all:{buyIn:0,payout:0,net:0,count:0}};LEDGER_CATS.forEach(c=>{t[c]={buyIn:0,payout:0,net:0,count:0};});filtered.forEach(e=>{t.all.buyIn+=e.buyIn||0;t.all.payout+=e.payout||0;t.all.net+=e.net||0;t.all.count++;if(t[e.category]){t[e.category].buyIn+=e.buyIn||0;t[e.category].payout+=e.payout||0;t[e.category].net+=e.net||0;t[e.category].count++;}});return t;},[filtered]);
+  const[date,setDate]=useState(nowET().slice(0,10));const[cat,setCat]=useState(LEDGER_CATS[0]);const[desc,setDesc]=useState("");const[amountIn,setAmountIn]=useState("");const[amountOut,setAmountOut]=useState("");const[filterCat,setFilterCat]=useState("");const[confirmDel,setConfirmDel]=useState(null);const[gradeId,setGradeId]=useState(null);const[gradePayout,setGradePayout]=useState("");const[showSettled,setShowSettled]=useState(false);
+  const addEntry=()=>{const buyIn=parseFloat(amountIn)||0;if(!desc.trim()&&!buyIn)return;const payout=amountOut!==""?parseFloat(amountOut)||0:null;const settled=payout!==null;setEntries(p=>[{id:uid(),date,category:cat,description:desc.trim(),buyIn,payout:settled?payout:null,net:settled?Math.round((payout-buyIn)*100)/100:null,settled,settledAt:settled?new Date().toISOString():null,createdAt:new Date().toISOString()},...p]);setDesc("");setAmountIn("");setAmountOut("");};
+  const gradeEntry=(id,payout)=>{setEntries(p=>p.map(e=>{if(e.id!==id)return e;const po=parseFloat(payout)||0;return{...e,payout:po,net:Math.round((po-e.buyIn)*100)/100,settled:true,settledAt:new Date().toISOString()};}));setGradeId(null);setGradePayout("");};
+  const pending=useMemo(()=>entries.filter(e=>!e.settled),[entries]);
+  const settled=useMemo(()=>{let list=entries.filter(e=>e.settled);if(filterCat)list=list.filter(e=>e.category===filterCat);return[...list].sort((a,b)=>(b.settledAt||b.date||"").localeCompare(a.settledAt||a.date||""));},[entries,filterCat]);
+  const totals=useMemo(()=>{const t={buyIn:0,payout:0,net:0,count:0};settled.forEach(e=>{t.buyIn+=e.buyIn||0;t.payout+=e.payout||0;t.net+=e.net||0;t.count++;});return t;},[settled]);
+  const pendingRisk=useMemo(()=>pending.reduce((s,e)=>s+(e.buyIn||0),0),[pending]);
   return(<div style={{paddingTop:20,maxWidth:600,margin:"0 auto"}}>
     <h2 style={{margin:"0 0 16px",fontSize:18,fontWeight:600}}>Gambling Ledger</h2>
     <SC t="New Entry">
       <div style={{display:"flex",gap:8,marginBottom:8}}><div style={{flex:1}}><Lb>Date</Lb><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...IS,colorScheme:"dark"}}/></div><div style={{flex:1}}><Lb>Category</Lb><select value={cat} onChange={e=>setCat(e.target.value)} style={SS}>{LEDGER_CATS.map(c=><option key={c}>{c}</option>)}</select></div></div>
       <div style={{marginBottom:8}}><Lb>Description</Lb><input value={desc} onChange={e=>setDesc(e.target.value)} placeholder="e.g. MGM Blackjack, DK Contest, Turfway Park R5" style={IS}/></div>
-      <div style={{display:"flex",gap:8,marginBottom:10}}><div style={{flex:1}}><Lb>Buy-In / Cost</Lb><input value={amountIn} onChange={e=>setAmountIn(e.target.value)} placeholder="$0" style={{...IS,fontFamily:"'JetBrains Mono',monospace"}}/></div><div style={{flex:1}}><Lb>Payout / Return</Lb><input value={amountOut} onChange={e=>setAmountOut(e.target.value)} placeholder="$0" style={{...IS,fontFamily:"'JetBrains Mono',monospace"}}/></div></div>
-      {(amountIn||amountOut)&&<div style={{fontSize:13,color:"#a0a0b8",marginBottom:10,fontFamily:"'JetBrains Mono',monospace"}}>Net: <span style={{color:(parseFloat(amountOut)||0)-(parseFloat(amountIn)||0)>=0?"#22c55e":"#ef4444",fontWeight:600}}>{fmtUsd(Math.round(((parseFloat(amountOut)||0)-(parseFloat(amountIn)||0))*100)/100)}</span></div>}
+      <div style={{display:"flex",gap:8,marginBottom:4}}><div style={{flex:1}}><Lb>Buy-In / Cost</Lb><input value={amountIn} onChange={e=>setAmountIn(e.target.value)} placeholder="$0" style={{...IS,fontFamily:"'JetBrains Mono',monospace"}}/></div><div style={{flex:1}}><Lb>Payout <span style={{color:"#525280",fontWeight:400}}>(leave blank to grade later)</span></Lb><input value={amountOut} onChange={e=>setAmountOut(e.target.value)} placeholder="—" style={{...IS,fontFamily:"'JetBrains Mono',monospace"}}/></div></div>
+      {amountIn&&<div style={{fontSize:12,color:"#a0a0b8",marginBottom:8,fontFamily:"'JetBrains Mono',monospace"}}>{amountOut!==""?"Net: ":"Cost: "}<span style={{color:amountOut!==""?((parseFloat(amountOut)||0)-(parseFloat(amountIn)||0)>=0?"#22c55e":"#ef4444"):"#f59e0b",fontWeight:600}}>{amountOut!==""?fmtUsd(Math.round(((parseFloat(amountOut)||0)-(parseFloat(amountIn)||0))*100)/100):fmtUsd(parseFloat(amountIn)||0)}</span></div>}
       <button onClick={addEntry} style={{...BP,width:"100%",justifyContent:"center"}}>Add Entry</button>
     </SC>
-    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:16,alignItems:"center"}}>
+    {pending.length>0&&<SC t={"Pending ("+pending.length+" · "+fmtUsd(pendingRisk)+" at risk)"}>
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        {pending.map(e=>(<div key={e.id} style={{background:"#0d0d14",border:"1px solid #1a1a28",borderRadius:8,padding:"10px 14px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:4,height:32,borderRadius:2,background:"#f59e0b",flexShrink:0}}/>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}><span style={{fontSize:11,color:"#6b6b8a"}}>{e.date}</span><span style={{fontSize:9,background:"#2e2a1a",color:"#f59e0b",padding:"1px 6px",borderRadius:4,fontWeight:600}}>{e.category}</span></div>
+              <div style={{fontSize:13,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.description||"\u2014"}</div>
+            </div>
+            <div style={{fontSize:13,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:"#e0e0e0"}}>{fmtUsd(e.buyIn)}</div>
+            <button onClick={()=>{setGradeId(gradeId===e.id?null:e.id);setGradePayout("");}} style={{...BS,background:"#1a2e1a",color:"#22c55e",fontSize:11}}>Grade</button>
+            {confirmDel===e.id?<div style={{display:"flex",gap:4}}><button onClick={()=>{setEntries(p=>p.filter(x=>x.id!==e.id));setConfirmDel(null);}} style={{...BS,color:"#ef4444",fontSize:10,padding:"4px 8px"}}>Yes</button><button onClick={()=>setConfirmDel(null)} style={{...BS,fontSize:10,padding:"4px 8px"}}>No</button></div>:<button onClick={()=>setConfirmDel(e.id)} style={{background:"none",border:"none",color:"#525280",cursor:"pointer",fontSize:12}}>{"\u00d7"}</button>}
+          </div>
+          {gradeId===e.id&&<div style={{marginTop:8,display:"flex",gap:8,alignItems:"center"}}><div style={{flex:1}}><Lb>Payout</Lb><input value={gradePayout} onChange={ev=>setGradePayout(ev.target.value)} placeholder="$0" style={{...IS,fontFamily:"'JetBrains Mono',monospace"}} autoFocus/></div><div style={{fontSize:12,fontFamily:"'JetBrains Mono',monospace",color:(parseFloat(gradePayout)||0)-e.buyIn>=0?"#22c55e":"#ef4444",minWidth:60,textAlign:"right"}}>{gradePayout?fmtUsd(Math.round(((parseFloat(gradePayout)||0)-e.buyIn)*100)/100):""}</div><button onClick={()=>gradeEntry(e.id,gradePayout)} style={{...BP,fontSize:11}}>Confirm</button></div>}
+        </div>))}
+      </div>
+    </SC>}
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}><h3 style={{margin:0,fontSize:15,fontWeight:600}}>Settled</h3></div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12,alignItems:"center"}}>
       <button onClick={()=>setFilterCat("")} style={{...BS,background:!filterCat?"#1a2e1a":"transparent",color:!filterCat?"#22c55e":"#6b6b8a",border:"1px solid "+(!filterCat?"#22c55e44":"#1e1e2e"),fontSize:11,fontWeight:600}}>All</button>
-      {LEDGER_CATS.map(c=><button key={c} onClick={()=>setFilterCat(filterCat===c?"":c)} style={{...BS,background:filterCat===c?"#1a2e1a":"transparent",color:filterCat===c?"#22c55e":"#6b6b8a",border:"1px solid "+(filterCat===c?"#22c55e44":"#1e1e2e"),fontSize:11,fontWeight:600}}>{c}{totals[c]&&totals[c].count>0?" ("+totals[c].count+")":""}</button>)}
+      {LEDGER_CATS.map(c=><button key={c} onClick={()=>setFilterCat(filterCat===c?"":c)} style={{...BS,background:filterCat===c?"#1a2e1a":"transparent",color:filterCat===c?"#22c55e":"#6b6b8a",border:"1px solid "+(filterCat===c?"#22c55e44":"#1e1e2e"),fontSize:11,fontWeight:600}}>{c}</button>)}
     </div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
-      <div style={{background:"#111118",borderRadius:8,padding:"10px 12px",border:"1px solid #1e1e2e",textAlign:"center"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Spent</div><div style={{fontSize:16,fontWeight:600,color:"#e0e0e0",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(totals.all.buyIn*100)/100)}</div></div>
-      <div style={{background:"#111118",borderRadius:8,padding:"10px 12px",border:"1px solid #1e1e2e",textAlign:"center"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Returned</div><div style={{fontSize:16,fontWeight:600,color:"#e0e0e0",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(totals.all.payout*100)/100)}</div></div>
-      <div style={{background:"#111118",borderRadius:8,padding:"10px 12px",border:"1px solid #1e1e2e",textAlign:"center"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Net P/L</div><div style={{fontSize:16,fontWeight:600,color:totals.all.net>=0?"#22c55e":"#ef4444",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(totals.all.net*100)/100)}</div></div>
+      <div style={{background:"#111118",borderRadius:8,padding:"10px 12px",border:"1px solid #1e1e2e",textAlign:"center"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Spent</div><div style={{fontSize:16,fontWeight:600,color:"#e0e0e0",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(totals.buyIn*100)/100)}</div></div>
+      <div style={{background:"#111118",borderRadius:8,padding:"10px 12px",border:"1px solid #1e1e2e",textAlign:"center"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Returned</div><div style={{fontSize:16,fontWeight:600,color:"#e0e0e0",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(totals.payout*100)/100)}</div></div>
+      <div style={{background:"#111118",borderRadius:8,padding:"10px 12px",border:"1px solid #1e1e2e",textAlign:"center"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Net P/L</div><div style={{fontSize:16,fontWeight:600,color:totals.net>=0?"#22c55e":"#ef4444",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(totals.net*100)/100)}</div></div>
     </div>
-    {sorted.length===0?<div style={{textAlign:"center",padding:"40px 20px",color:"#525280"}}>No entries yet</div>:(
+    {settled.length===0?<div style={{textAlign:"center",padding:"40px 20px",color:"#525280"}}>No settled entries</div>:(
       <div style={{display:"flex",flexDirection:"column",gap:4}}>
-        {sorted.map(e=>(<div key={e.id} style={{background:"#111118",border:"1px solid #1a1a28",borderRadius:8,padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
+        {settled.map(e=>(<div key={e.id} style={{background:"#111118",border:"1px solid #1a1a28",borderRadius:8,padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:4,height:32,borderRadius:2,background:e.net>=0?"#22c55e":"#ef4444",flexShrink:0}}/>
           <div style={{flex:1,minWidth:0}}>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}><span style={{fontSize:11,color:"#6b6b8a"}}>{e.date}</span><span style={{fontSize:9,background:"#1a1a2e",color:"#818cf8",padding:"1px 6px",borderRadius:4,fontWeight:600}}>{e.category}</span></div>
-            <div style={{fontSize:13,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.description||"—"}</div>
+            <div style={{fontSize:13,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.description||"\u2014"}</div>
           </div>
           <div style={{textAlign:"right",flexShrink:0}}>
             <div style={{fontSize:13,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:e.net>=0?"#22c55e":"#ef4444"}}>{fmtUsd(e.net)}</div>
-            <div style={{fontSize:10,color:"#525280",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(e.buyIn)+" → "+fmtUsd(e.payout)}</div>
+            <div style={{fontSize:10,color:"#525280",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(e.buyIn)+" \u2192 "+fmtUsd(e.payout)}</div>
           </div>
-          {confirmDel===e.id?<div style={{display:"flex",gap:4}}><button onClick={()=>{setEntries(p=>p.filter(x=>x.id!==e.id));setConfirmDel(null);}} style={{...BS,color:"#ef4444",fontSize:10,padding:"4px 8px"}}>Yes</button><button onClick={()=>setConfirmDel(null)} style={{...BS,fontSize:10,padding:"4px 8px"}}>No</button></div>:<button onClick={()=>setConfirmDel(e.id)} style={{background:"none",border:"none",color:"#525280",cursor:"pointer",fontSize:12}}>×</button>}
+          {confirmDel===e.id?<div style={{display:"flex",gap:4}}><button onClick={()=>{setEntries(p=>p.filter(x=>x.id!==e.id));setConfirmDel(null);}} style={{...BS,color:"#ef4444",fontSize:10,padding:"4px 8px"}}>Yes</button><button onClick={()=>setConfirmDel(null)} style={{...BS,fontSize:10,padding:"4px 8px"}}>No</button></div>:<button onClick={()=>setConfirmDel(e.id)} style={{background:"none",border:"none",color:"#525280",cursor:"pointer",fontSize:12}}>{"\u00d7"}</button>}
         </div>))}
       </div>
     )}
