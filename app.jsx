@@ -327,7 +327,11 @@ function BetForm({bet,books,holders,tags,settings,onSave,onCancel,sports,isEdit,
 
   const hasSel=isML?legs.length>=2&&legs.every(l=>l.selection):!!selPreview.trim()&&!selPreview.includes("?");const hasOdds=multiBook?multiEntries.every(e=>pO(e.oddsStr).oddsDec!=null):oddsDec!=null;const hasSt=multiBook?multiEntries.every(e=>e.isFree?!!e.freeVal:!!(e.stakeStr||e.toWinStr)):isFreeBet?!!freebetVal:!!(stakeStr||toWinStr);const canSave=hasSel&&hasOdds&&hasSt&&!!sport;
 
+  const[confirm168,setConfirm168]=useState(false);
+  const has168=()=>{if(multiBook)return multiEntries.some(e=>e.book==="168");return book==="168";};
   const handleSave=()=>{
+    if(!isEdit&&has168()&&!confirm168){setConfirm168(true);return;}
+    setConfirm168(false);
     // Learn new teams/players
     if(setCustomTeams&&league){const builtIn=getTeams(league,{});const toCheck=[awayTeam,homeTeam].filter(t=>t&&t.trim()&&!builtIn.includes(t)&&!((customTeams||{})[league]||[]).includes(t));if(toCheck.length)setCustomTeams(prev=>({...prev,[league]:[...((prev||{})[league]||[]),...toCheck]}));}
     if(setCustomPlayers&&sport){const builtIn=getPlayers(sport,{});const pToCheck=[participant,matchP1,matchP2].filter(p=>p&&p.trim()&&!builtIn.includes(p)&&!((customPlayers||{})[sport]||[]).includes(p));if(pToCheck.length)setCustomPlayers(prev=>({...prev,[sport]:[...((prev||{})[sport]||[]),...pToCheck]}));}
@@ -378,6 +382,7 @@ function BetForm({bet,books,holders,tags,settings,onSave,onCancel,sports,isEdit,
         <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>{tags.map(t=><button key={t} onClick={()=>{const nxt=selTags.includes(t)?selTags.filter(x=>x!==t):[...selTags,t];setSelTags(nxt);if(t==="Freebet"&&!selTags.includes(t)&&!multiBook){setStakeStr("0");setRiskMode("risk");}}} style={{...BS,padding:"3px 10px",background:selTags.includes(t)?(t==="Freebet"?"#2e2a1a":"#1a2e1a"):"transparent",color:selTags.includes(t)?(t==="Freebet"?"#f59e0b":"#22c55e"):"#525280",border:"1px solid "+(selTags.includes(t)?(t==="Freebet"?"#f59e0b44":"#22c55e44"):"#1e1e2e")}}>{t}</button>)}</div>
         <textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Notes..." rows={2} style={{...IS,resize:"vertical"}}/>
       </Sec>
+      {confirm168&&<div style={{background:"#1a1a0a",border:"2px solid #f59e0b",borderRadius:10,padding:16,marginBottom:12,textAlign:"center"}}><div style={{fontSize:15,fontWeight:600,color:"#f59e0b",marginBottom:8}}>Confirm: 168 Sports</div><div style={{fontSize:13,color:"#a0a0b8",marginBottom:12}}>You are placing this bet on <strong style={{color:"#f59e0b"}}>168</strong>. This is a shared account. Please double-check all details for accuracy.</div><div style={{display:"flex",gap:8,justifyContent:"center"}}><button onClick={handleSave} style={{...BP,fontSize:13,padding:"10px 24px"}}>Yes, Save to 168</button><button onClick={()=>setConfirm168(false)} style={{...BS,fontSize:13,padding:"10px 24px",color:"#ef4444"}}>Cancel</button></div></div>}
       <button onClick={handleSave} disabled={!canSave} style={{...BP,width:"100%",opacity:canSave?1:0.4,marginBottom:20}}>{isEdit?"Update":multiBook?"Save ("+((mT&&mT.count)||0)+" books)":"Save Bet"}</button>
       </>}
     </div>
