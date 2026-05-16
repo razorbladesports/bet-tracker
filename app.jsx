@@ -333,7 +333,7 @@ function BetForm({bet,books,holders,tags,settings,onSave,onCancel,sports,isEdit,
   useEffect(()=>{if(isML&&legs.length<2)setLegs([{id:uid(),selection:"",line:""},{id:uid(),selection:"",line:""}]);},[isML]);
 
   const selPreview=useMemo(()=>{
-    if(isML){const ls=legs.map(l=>{const s=l.selection||"";const ln=l.line?((parseFloat(l.line)>0?"+":"")+parseFloat(l.line)):"";return(s+(ln?" "+ln:"")).trim();}).filter(Boolean).join(" / ");if(isRR)return ls+(ls?" RR "+rrSizes.join(","):"");return isTeaser?ls+(ls?" ("+teaserPts+"pt)":""):ls;}
+    if(isML){const ls=legs.map(l=>{const s=l.selection||"";const ln=l.line||"";return(s+(ln?" "+ln:"")).trim();}).filter(Boolean).join(" / ");if(isRR)return ls+(ls?" RR "+rrSizes.join(","):"");return isTeaser?ls+(ls?" ("+teaserPts+"pt)":""):ls;}
     if(isFut){switch(futCat){case"Outrights":return(teamName||participant||"?")+" "+(futDesc||"?");case"Win Total":return(teamName||"?")+" "+(overUnder||"O")+" "+(line||"?")+" Wins";case"Awards":return(participant||"?")+" - "+(futDesc||"?");case"Player Props":return(participant||"?")+" "+(overUnder||"O")+" "+(line||"?")+(propStat?" "+propStat:"");default:return futDesc||"?";}}
     if(isMatchup)return buildDisplay("Matchup",teamName,line,overUnder,participant,propStat,matchP1,matchP2,matchSide);
     return buildDisplay(marketType,teamName,line,overUnder,participant,propStat);
