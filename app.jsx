@@ -114,13 +114,14 @@ function App(){
         {view==="edit"&&editBet&&<BetForm bet={editBet} books={books} holders={holders} tags={tags} settings={settings} lastGolfTourney={lastGolfTourney} customTeams={customTeams} customPlayers={customPlayers} customMarkets={customMarkets} setCustomTeams={setCustomTeams} setCustomPlayers={setCustomPlayers} setCustomMarkets={setCustomMarkets} onSave={b=>{updateBet(editBet.id,b);setView(editBet.result?"history":"open");}} onCancel={()=>setView(editBet.result?"history":"open")} sports={DEFAULT_SPORTS} isEdit/>}
         {view==="settings"&&<SetP settings={settings} setSettings={setSettings} books={books} setBooks={setBooks} holders={holders} setHolders={setHolders} tags={tags} setTags={setTags} bets={bets} setBets={setBets} customMarkets={customMarkets} setCustomMarkets={setCustomMarkets}/>}
         {view==="ledger"&&<Ledger entries={ledger} setEntries={setLedger}/>}
+        {view==="clv"&&<CLVTab bets={bets} settings={settings}/>}
       </div>
     </div>
   );
 }
 
 function NavBar({view,setView,bc,pc}){
-  const items=[{id:"dashboard",l:"Dashboard",i:"📊"},{id:"new",l:"New Bet",i:"➕"},{id:"open",l:"Open",i:"🟢",badge:pc||null},{id:"history",l:"History",i:"📋"},{id:"ledger",l:"Ledger",i:"💰"},{id:"settings",l:"Settings",i:"⚙️"}];
+  const items=[{id:"dashboard",l:"Dashboard",i:"📊"},{id:"new",l:"New Bet",i:"➕"},{id:"open",l:"Open",i:"🟢",badge:pc||null},{id:"history",l:"History",i:"📋"},{id:"clv",l:"CLV",i:"📈"},{id:"ledger",l:"Ledger",i:"💰"},{id:"settings",l:"Settings",i:"⚙️"}];
   return(<nav style={{background:"#111118",borderBottom:"1px solid #1e1e2e",padding:"0 16px",position:"sticky",top:0,zIndex:100,display:"flex",alignItems:"center",overflowX:"auto"}}><div style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,fontSize:15,color:"#22c55e",padding:"14px 12px 14px 0",letterSpacing:"-0.5px",borderRight:"1px solid #1e1e2e",marginRight:4,flexShrink:0}}>BT<span style={{color:"#525280"}}>PRO</span></div>{items.map(it=>(<button key={it.id} onClick={()=>setView(it.id)} style={{background:view===it.id?"#1a1a2e":"transparent",border:"none",color:view===it.id?"#e0e0e0":"#6b6b8a",padding:"14px 12px",cursor:"pointer",fontSize:12,fontWeight:500,display:"flex",alignItems:"center",gap:5,borderBottom:view===it.id?"2px solid #22c55e":"2px solid transparent",whiteSpace:"nowrap",flexShrink:0}}><span>{it.i}</span>{it.l}{it.badge&&<span style={{background:"#3b82f6",color:"#fff",fontSize:10,borderRadius:8,padding:"1px 6px",fontWeight:600}}>{it.badge}</span>}</button>))}<div style={{marginLeft:"auto",fontSize:11,color:"#525280",fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{bc}</div></nav>);
 }
 
@@ -418,6 +419,56 @@ function BetForm({bet,books,holders,tags,settings,onSave,onCancel,sports,isEdit,
   );
 }
 function Sec({c,label,children}){return(<div style={{background:"#111118",border:"1px solid #1e1e2e",borderRadius:10,padding:14,marginBottom:12}}>{label&&<div style={{fontSize:10,color:c||"#6b6b8a",fontWeight:600,marginBottom:10,textTransform:"uppercase",letterSpacing:1}}>{label}</div>}{children}</div>);}
+
+// ---- CLV (Closing Line Value) ----
+function CLVTab({bets,settings}){
+  const clvBets=useMemo(()=>{return bets.filter(b=>b.sport==="Baseball"&&b.league==="MLB"&&(b.marketType==="Moneyline"||b.betType==="Straight"&&b.marketType==="Moneyline")&&b.oddsAmer!=null&&b.closingOdds!=null&&b.result).map(b=>{const betDec=calc.amerToDec(b.oddsAmer);const closeDec=calc.amerToDec(b.closingOdds);const closeProb=1/closeDec;const winProb=closeProb;const loseProb=1-closeProb;const toWin=b.toWin||(b.stake*(betDec-1));const ev=Math.round((winProb*toWin-loseProb*b.stake)*100)/100;const evRoi=b.stake>0?ev/b.stake:0;const betProb=1/betDec;const hasCLV=closeProb>betProb;return{...b,betDec,closeDec,closeProb,betProb,ev,evRoi,toWin,hasCLV};});},[bets]);
+  const plusCLV=clvBets.filter(b=>b.hasCLV);const minusCLV=clvBets.filter(b=>!b.hasCLV);
+  const totalEV=clvBets.reduce((s,b)=>s+b.ev,0);const totalStake=clvBets.reduce((s,b)=>s+(b.stake||0),0);const totalEvRoi=totalStake>0?totalEV/totalStake:0;
+  const actualPL=clvBets.reduce((s,b)=>s+(b.netProfit||0),0);const plusEV=plusCLV.reduce((s,b)=>s+b.ev,0);const minusEV=minusCLV.reduce((s,b)=>s+b.ev,0);
+  const sorted=[...clvBets].sort((a,b)=>(b.settledAt||b.placedAt||"").localeCompare(a.settledAt||a.placedAt||""));
+  return(<div style={{paddingTop:20,maxWidth:700,margin:"0 auto"}}>
+    <h2 style={{margin:"0 0 6px",fontSize:18,fontWeight:600}}>Closing Line Value</h2>
+    <div style={{fontSize:12,color:"#525280",marginBottom:16}}>MLB Moneylines with closing prices</div>
+    {clvBets.length===0?<div style={{textAlign:"center",padding:"60px 20px",color:"#525280"}}>No MLB moneyline bets with closing prices yet. Add closing lines to your bets to see CLV analysis.</div>:(<div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:12}}>
+        <div style={{background:"#111118",borderRadius:8,padding:"12px 14px",border:"1px solid #1e1e2e"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Total Bets</div><div style={{fontSize:20,fontWeight:700,color:"#e0e0e0",fontFamily:"'JetBrains Mono',monospace"}}>{clvBets.length}</div></div>
+        <div style={{background:"#111118",borderRadius:8,padding:"12px 14px",border:"1px solid #1e1e2e"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>+CLV Rate</div><div style={{fontSize:20,fontWeight:700,color:plusCLV.length/clvBets.length>=0.5?"#22c55e":"#ef4444",fontFamily:"'JetBrains Mono',monospace"}}>{fmt(plusCLV.length/clvBets.length*100,1)}%</div><div style={{fontSize:11,color:"#525280",fontFamily:"'JetBrains Mono',monospace"}}>{plusCLV.length}+ / {minusCLV.length}-</div></div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
+        <div style={{background:"#111118",borderRadius:8,padding:"12px 14px",border:"1px solid #1e1e2e"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Total EV</div><div style={{fontSize:18,fontWeight:700,color:totalEV>=0?"#22c55e":"#ef4444",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(totalEV*100)/100)}</div></div>
+        <div style={{background:"#111118",borderRadius:8,padding:"12px 14px",border:"1px solid #1e1e2e"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Expected ROI</div><div style={{fontSize:18,fontWeight:700,color:totalEvRoi>=0?"#22c55e":"#ef4444",fontFamily:"'JetBrains Mono',monospace"}}>{fmt(totalEvRoi*100,2)}%</div></div>
+        <div style={{background:"#111118",borderRadius:8,padding:"12px 14px",border:"1px solid #1e1e2e"}}><div style={{fontSize:10,color:"#6b6b8a",textTransform:"uppercase",marginBottom:4}}>Actual P/L</div><div style={{fontSize:18,fontWeight:700,color:actualPL>=0?"#22c55e":"#ef4444",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(actualPL*100)/100)}</div></div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:8,marginBottom:16}}>
+        <div style={{background:"#0d1a0d",borderRadius:8,padding:"10px 14px",border:"1px solid #22c55e22"}}><div style={{fontSize:10,color:"#22c55e",textTransform:"uppercase",marginBottom:4}}>+CLV EV</div><div style={{fontSize:16,fontWeight:700,color:"#22c55e",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(plusEV*100)/100)}</div><div style={{fontSize:11,color:"#525280"}}>{plusCLV.length} bets{DOT}${fmt(plusCLV.reduce((s,b)=>s+b.stake,0))} risked</div></div>
+        <div style={{background:"#1a0d0d",borderRadius:8,padding:"10px 14px",border:"1px solid #ef444422"}}><div style={{fontSize:10,color:"#ef4444",textTransform:"uppercase",marginBottom:4}}>-CLV EV</div><div style={{fontSize:16,fontWeight:700,color:"#ef4444",fontFamily:"'JetBrains Mono',monospace"}}>{fmtUsd(Math.round(minusEV*100)/100)}</div><div style={{fontSize:11,color:"#525280"}}>{minusCLV.length} bets{DOT}${fmt(minusCLV.reduce((s,b)=>s+b.stake,0))} risked</div></div>
+      </div>
+      <h3 style={{margin:"0 0 8px",fontSize:14,fontWeight:600}}>Bet Details</h3>
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        {sorted.map(b=>(<div key={b.id} style={{background:"#111118",border:"1px solid #1a1a28",borderRadius:8,padding:"10px 14px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+            <div style={{width:4,height:28,borderRadius:2,background:b.hasCLV?"#22c55e":"#ef4444",flexShrink:0}}/>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.selection}</div>
+              <div style={{fontSize:11,color:"#6b6b8a"}}>{b.awayTeam&&b.homeTeam?b.awayTeam+" @ "+b.homeTeam:""}{b.eventDate?" · "+b.eventDate:""}</div>
+            </div>
+            <div style={{textAlign:"right",flexShrink:0}}>
+              <div style={{fontSize:12,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:b.ev>=0?"#22c55e":"#ef4444"}}>EV {fmtUsd(b.ev)}</div>
+              <div style={{fontSize:10,color:"#525280",fontFamily:"'JetBrains Mono',monospace"}}>{fmt(b.evRoi*100,2)}% ROI</div>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:12,fontSize:11,color:"#6b6b8a",fontFamily:"'JetBrains Mono',monospace",paddingLeft:12}}>
+            <span>Bet: <span style={{color:"#a0a0b8"}}>{fmtOdds(b.oddsAmer)}</span> <span style={{color:"#525280"}}>({fmt(b.betProb*100,1)}%)</span></span>
+            <span>Close: <span style={{color:b.hasCLV?"#22c55e":"#ef4444"}}>{fmtOdds(b.closingOdds)}</span> <span style={{color:"#525280"}}>({fmt(b.closeProb*100,1)}%)</span></span>
+            <span>${fmt(b.stake)}</span>
+            <span style={{color:(b.netProfit||0)>=0?"#22c55e":"#ef4444"}}>P/L {fmtUsd(b.netProfit||0)}</span>
+          </div>
+        </div>))}
+      </div>
+    </div>)}
+  </div>);
+}
 
 // ---- LEDGER (non-sports gambling) ----
 const LEDGER_CATS=["Contest","Casino","Horse Racing","Poker","Other"];
