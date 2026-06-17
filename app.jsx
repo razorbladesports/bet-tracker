@@ -322,9 +322,9 @@ function BetForm({bet,books,holders,tags,settings,onSave,onCancel,sports,isEdit,
   useEffect(()=>{if(sport==="Golf"&&!tournament&&lastGolfTourney)setTournament(lastGolfTourney);},[sport]);
 
   const isML=betType==="Parlay"||betType==="SGP"||betType==="Teaser"||betType==="Round Robin";const isFut=betType==="Futures";const isStraight=betType==="Straight";const isTeaser=betType==="Teaser";const isRR=betType==="Round Robin";const isProp=marketType==="Player Prop";const isMatchup=marketType==="Matchup";const isFreeBet=selTags.includes("Freebet")&&!multiBook;
+  const cb=useMemo(()=>cmBehaviors(customMarkets),[customMarkets]);
   const _wOU=wantsOU(marketType,cb),_wLn=wantsLine(marketType,cb),_wSd=wantsSide(marketType,cb),_wPl=wantsPlayer(marketType,cb);
   const T=tmpl(sport||"Other",customMarkets);const sportObj=sports.find(s=>s.name===sport);const leagueOpts=sportObj?sportObj.leagues:sports.flatMap(s=>s.leagues);const teamList=getTeams(league,customTeams);const playerList=getPlayers(sport,customPlayers);const teamName=betSide==="away"?awayTeam:homeTeam;
-  const cb=useMemo(()=>cmBehaviors(customMarkets),[customMarkets]);
 
   const pO=str=>{const n=parseFloat(str);if(isNaN(n)||!(str||"").trim())return{oddsDec:null,oddsAmer:null};if(oddsFormat==="american"&&n!==0&&(n>=100||n<=-100))return{oddsDec:calc.amerToDec(n),oddsAmer:Math.round(n)};if(oddsFormat==="decimal"&&n>=1.01)return{oddsDec:n,oddsAmer:calc.decToAmer(n)};return{oddsDec:null,oddsAmer:null};};
   const{oddsDec,oddsAmer}=pO(oddsStr);
