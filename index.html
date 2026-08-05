@@ -40,7 +40,7 @@
   <!-- Load and compile app manually (bypasses broken Babel script tag processor) -->
   <script>
     fetch("/app.jsx").then(function(r){return r.text()}).then(function(t){
-      var c=Babel.transform(t,{presets:["react"],sourceType:"script"}).code;
+      var c=Babel.transform(t,{presets:[["react",{runtime:"classic"}]],sourceType:"script"}).code;
       eval(c);
     }).catch(function(e){
       document.getElementById("root").innerHTML='<div style="color:red;padding:20px">Load error: '+e.message+'</div>';
