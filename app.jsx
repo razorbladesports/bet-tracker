@@ -36,6 +36,277 @@ function buildDisplay(mt,team,line,ou,participant,propStat,matchP1,matchP2,match
   }
 }
 
+// ---- POSITIONS: derived multi-bet analysis (pure helpers) ----
+const POS_EPS = 1e-6;
+const r2 = n => Math.round(n * 100) / 100;
+const normalizeName = s => (s == null ? "" : String(s)).trim().toLowerCase().replace(/\s+/g, " ");
+const pairKey = (a, b) => [normalizeName(a), normalizeName(b)].sort().join("|");
+
+// Ties reachable? Affects both region reachability and wording.
+function tiesPossible(sport, league) {
+  if (sport === "Soccer") return true;
+  if (sport === "Football") return league !== "NCAAF";
+  return false;
+}
+// Doubleheader / repeated-matchup risk on a single calendar date.
+function ambiguousSameDay(sport, league) { return sport === "Baseball" || league === "MLB"; }
+
+// Market family: fam groups compatible settlement rules, period keeps 1H/1Q/1P separate.
+// Alt Spread/Alt Total share the base family (same period, same settlement basis, different number).
+// Team Total is deliberately absent: settlement depends on a single team's score, which needs a
+// team qualifier the schema does not reliably carry. Those stay ungrouped.
+const MKT_FAMILY = {
+  "Moneyline": { fam: "ML", period: "FG" }, "1H ML": { fam: "ML", period: "1H" },
+  "1Q ML": { fam: "ML", period: "1Q" }, "1P ML": { fam: "ML", period: "1P" },
+  "Spread": { fam: "SPREAD", period: "FG" }, "Alt Spread": { fam: "SPREAD", period: "FG" },
+  "1H Spread": { fam: "SPREAD", period: "1H" }, "1Q Spread": { fam: "SPREAD", period: "1Q" },
+  "1P Spread": { fam: "SPREAD", period: "1P" },
+  "Total": { fam: "TOTAL", period: "FG" }, "Alt Total": { fam: "TOTAL", period: "FG" },
+  "1H Total": { fam: "TOTAL", period: "1H" }, "1Q Total": { fam: "TOTAL", period: "1Q" },
+  "1P Total": { fam: "TOTAL", period: "1P" },
+  "Matchup": { fam: "MATCHUP", period: "FG" }
+};
+function getMarketFamily(bet) { return MKT_FAMILY[bet && bet.marketType] || null; }
+
+function getEventIdentity(bet) {
+  const f = getMarketFamily(bet); if (!f) return null;
+  if (!bet.eventDate) return null;                       // no date -> never combine
+  const base = [bet.sport || "", bet.league || "", bet.eventDate];
+  if (f.fam === "MATCHUP") {
+    if (!bet.matchP1 || !bet.matchP2) return null;
+    return { kind: "matchup", key: ["MU", ...base, normalizeName(bet.tournament), pairKey(bet.matchP1, bet.matchP2)].join("~"),
+      label: bet.matchP1 + " vs " + bet.matchP2 };
+  }
+  if (!bet.awayTeam || !bet.homeTeam) return null;
+  if (normalizeName(bet.awayTeam) === normalizeName(bet.homeTeam)) return null;
+  return { kind: "team", key: ["TM", ...base, pairKey(bet.awayTeam, bet.homeTeam)].join("~"),
+    label: bet.awayTeam + " @ " + bet.homeTeam };
+}
+
+function getPositionGroupKey(bet) {
+  if (!bet || bet.result) return null;
+  if (bet.noCombine) return null;                        // manual escape hatch
+  if (bet.betType !== "Straight") return null;           // no parlay/teaser/RR/futures/SGP
+  const f = getMarketFamily(bet); if (!f) return null;
+  const ev = getEventIdentity(bet); if (!ev) return null;
+  if (bet.positionGroupId) return "MANUAL~" + bet.positionGroupId;  // manual link
+  return ev.key + "~" + f.fam + "~" + f.period;
+}
+
+// Normalize one bet into a settlement leg on the group's canonical axis.
+// canon = {kind, home, away}  (team) | {kind, p1, p2} (matchup)
+function toLeg(bet, canon) {
+  const f = getMarketFamily(bet);
+  const stake = Number(bet.stake) || 0;
+  const toWin = Number(bet.toWin) || 0;
+  const base = { betId: bet.id, fam: f.fam, stake, toWin, bet };
+  if (f.fam === "MATCHUP") {
+    const picked = bet.matchSide === "p2" ? bet.matchP2 : bet.matchP1;
+    return { ...base, mode: "discrete", pick: normalizeName(picked), side: normalizeName(picked) };
+  }
+  if (f.fam === "ML") {
+    const picked = bet.betSide === "home" ? bet.homeTeam : bet.awayTeam;
+    return { ...base, mode: "discrete", pick: normalizeName(picked), side: normalizeName(picked) };
+  }
+  if (f.fam === "TOTAL") {
+    if (bet.line == null) return null;
+    const dir = bet.overUnder === "Under" ? "lt" : "gt";
+    return { ...base, mode: "numeric", threshold: Number(bet.line), dir, side: dir };
+  }
+  // SPREAD
+  if (bet.line == null) return null;
+  const picked = normalizeName(bet.betSide === "home" ? bet.homeTeam : bet.awayTeam);
+  const L = Number(bet.line);
+  if (picked === canon.home) return { ...base, mode: "numeric", threshold: -L, dir: "gt", side: "gt" };
+  if (picked === canon.away) return { ...base, mode: "numeric", threshold: L, dir: "lt", side: "lt" };
+  return null;                                            // selection not one of the two teams
+}
+
+// Shared evaluator on the canonical numeric axis.
+function evaluateBetForOutcome(leg, value) {
+  if (leg.mode === "discrete") return leg.pick === value ? "win" : "loss";
+  if (leg.dir === "gt") return value > leg.threshold ? "win" : value === leg.threshold ? "push" : "loss";
+  return value < leg.threshold ? "win" : value === leg.threshold ? "push" : "loss";
+}
+function legProfit(leg, res) { return res === "win" ? leg.toWin : res === "loss" ? -leg.stake : 0; }
+
+// --- labelling ---
+function marginPoint(v, home, away) {
+  if (v > 0) return home + " by " + v;
+  if (v < 0) return away + " by " + (-v);
+  return "Tie";
+}
+function marginRangeLabel(a, b, openLo, openHi, home, away, ties) {
+  if (openLo && openHi) return "Any result";
+  if (openLo) {
+    if (b === 0) return ties ? away + " wins or game ties" : away + " wins";
+    if (b === -1 && !ties) return away + " wins";          // margin 0 unreachable
+    if (b < 0) return away + " by " + (-b) + "+";
+    return home + " by " + b + " or less";
+  }
+  if (openHi) {
+    if (a === 0) return ties ? "Game ties or " + home + " wins" : home + " wins";
+    if (a === 1 && !ties) return home + " wins";           // margin 0 unreachable
+    if (a > 0) return home + " by " + a + "+";
+    return away + " by " + (-a) + " or less";
+  }
+  if (a === b) return a === 0 ? "Game ties" : (a > 0 ? home : away) + " by exactly " + Math.abs(a);
+  if (a > 0 && b > 0) return home + " by " + a + "-" + b;
+  if (a < 0 && b < 0) return away + " by " + (-b) + "-" + (-a);
+  return marginPoint(a, home, away) + " through " + marginPoint(b, home, away);
+}
+function totalRangeLabel(a, b, openLo, openHi) {
+  if (openLo && openHi) return "Any total";
+  if (openLo) return b + " or fewer";
+  if (openHi) return a + " or more";
+  if (a === b) return "Exactly " + a;
+  return a + "-" + b;
+}
+
+// Build merged settlement regions.
+function buildOutcomeRegions(legs, ctx) {
+  if (legs[0].mode === "discrete") {
+    const outs = ctx.kind === "matchup"
+      ? [{ v: ctx.p1n, label: ctx.p1 + " wins" }, { v: ctx.p2n, label: ctx.p2 + " wins" }]
+      : [{ v: ctx.awayn, label: ctx.away + " wins" }, { v: ctx.homen, label: ctx.home + " wins" }];
+    if (ctx.kind === "team" && ctx.drawPossible) outs.push({ v: "__draw__", label: "Draw" });
+    return outs.map(o => {
+      const results = legs.map(l => evaluateBetForOutcome(l, o.v));
+      return { label: o.label, results, net: legs.reduce((s, l, i) => s + legProfit(l, results[i]), 0) };
+    });
+  }
+  const Ts = legs.map(l => l.threshold);
+  const lo = Math.floor(Math.min(...Ts)) - 2, hi = Math.ceil(Math.max(...Ts)) + 2;
+  const pts = [];
+  for (let v = lo; v <= hi; v++) {
+    if (ctx.fam === "TOTAL" && v < 0) continue;                 // totals cannot be negative
+    if (ctx.fam === "SPREAD" && v === 0 && !ctx.ties) continue; // tie unreachable in this sport
+    pts.push(v);
+  }
+  const runs = [];
+  pts.forEach(v => {
+    const results = legs.map(l => evaluateBetForOutcome(l, v));
+    const net = legs.reduce((s, l, i) => s + legProfit(l, results[i]), 0);
+    const sig = results.join("|") + "@" + r2(net);
+    const last = runs[runs.length - 1];
+    if (last && last.sig === sig) last.b = v;
+    else runs.push({ a: v, b: v, sig, results, net });
+  });
+  return runs.map((run, i) => {
+    const openLo = i === 0, openHi = i === runs.length - 1;
+    return { label: ctx.fam === "TOTAL" ? totalRangeLabel(run.a, run.b, openLo, openHi)
+        : marginRangeLabel(run.a, run.b, openLo, openHi, ctx.home, ctx.away, ctx.ties),
+      lo: run.a, hi: run.b, openLo, openHi, results: run.results, net: run.net };
+  });
+}
+
+function calculatePositionOutcomes(legs, ctx) {
+  const regions = buildOutcomeRegions(legs, ctx);
+  const nets = regions.map(r => r.net);
+  return { regions, best: Math.max(...nets), worst: Math.min(...nets) };
+}
+
+function classifyPosition(regions, legs, orderedBets) {
+  const nets = regions.map(r => r.net);
+  const distinct = [...new Set(nets.map(r2))];
+  if (nets.every(n => Math.abs(n) <= POS_EPS)) return "Flat / fully hedged";
+  if (nets.every(n => n > POS_EPS)) return "Arbitrage";
+  if (nets.every(n => n < -POS_EPS)) return "Locked loss";
+  if (regions.length > 2 || distinct.length > 2) return "Middle";
+  const first = orderedBets[0];
+  const idx = legs.findIndex(l => l.betId === first.id);
+  if (idx < 0) return "Two-sided exposure";
+  const winRegion = regions.find(rg => rg.results[idx] === "win");
+  if (!winRegion) return "Two-sided exposure";
+  return winRegion.net > POS_EPS ? "Hedged position" : "Reversed position";
+}
+
+// Only valid when the position reduces to one fixed loss and one fixed win.
+function effectivePositionOdds(regions) {
+  const nets = [...new Set(regions.map(r => r2(r.net)))];
+  if (nets.length !== 2) return null;
+  const pos = nets.filter(n => n > POS_EPS), neg = nets.filter(n => n < -POS_EPS);
+  if (pos.length !== 1 || neg.length !== 1) return null;
+  return calc.decToAmer(1 + pos[0] / Math.abs(neg[0]));
+}
+
+function summarizePosition(pos) {
+  if (!pos.combined) return "";
+  const mids = pos.regions.filter(r => r.results.every(x => x === "win"));
+  const bits = [];
+  if (pos.kind === "Arbitrage") bits.push("Guaranteed " + r2(pos.worst));
+  else if (pos.kind === "Locked loss") bits.push("Locked " + r2(pos.best));
+  if (mids.length) bits.push("Both win: " + mids.map(m => m.label).join(", "));
+  return bits.join(" · ");
+}
+
+function buildOpenPositions(openBets) {
+  const groups = new Map(); const loose = [];
+  openBets.forEach(b => {
+    const k = getPositionGroupKey(b);
+    if (!k) { loose.push(b); return; }
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(b);
+  });
+  const out = [];
+  groups.forEach((bets, key) => {
+    if (bets.length < 2) { loose.push(bets[0]); return; }
+    const ordered = [...bets].sort((x, y) => (x.placedAt || "").localeCompare(y.placedAt || ""));
+    const first = ordered[0];
+    const f = getMarketFamily(first); const ev = getEventIdentity(first);
+    const ctx = f.fam === "MATCHUP"
+      ? { kind: "matchup", fam: f.fam, p1: first.matchP1, p2: first.matchP2,
+          p1n: normalizeName(first.matchP1), p2n: normalizeName(first.matchP2) }
+      : { kind: "team", fam: f.fam, home: first.homeTeam, away: first.awayTeam,
+          homen: normalizeName(first.homeTeam), awayn: normalizeName(first.awayTeam),
+          ties: tiesPossible(first.sport, first.league),
+          drawPossible: f.fam === "ML" && first.sport === "Soccer" };
+    const canon = { home: ctx.homen, away: ctx.awayn };
+    const legs = ordered.map(b => toLeg(b, canon));
+    if (legs.some(l => !l)) { ordered.forEach(b => loose.push(b)); return; }   // unmappable -> stay separate
+    if (new Set(legs.map(l => l.side)).size < 2) { ordered.forEach(b => loose.push(b)); return; } // same-side only
+    const { regions, best, worst } = calculatePositionOutcomes(legs, ctx);
+    const kind = classifyPosition(regions, legs, ordered);
+    const warnings = [];
+    if (ctx.kind === "matchup") warnings.push("Tie / dead-heat rules are not modeled — verify book rules.");
+    if (ctx.kind === "team" && ambiguousSameDay(first.sport, first.league))
+      warnings.push("Same-day doubleheader possible — confirm these are the same game.");
+    if (ctx.drawPossible) warnings.push("Three-way market: a draw loses both sides.");
+    const pos = { key, combined: true, bets: ordered, sourceBetIds: ordered.map(b => b.id), legs, regions,
+      best, worst, kind, ctx, warnings, eventLabel: ev.label, marketType: first.marketType,
+      eventDate: first.eventDate, grossStake: ordered.reduce((s, b) => s + (Number(b.stake) || 0), 0),
+      effAmer: effectivePositionOdds(regions) };
+    pos.summary = summarizePosition(pos);
+    out.push(pos);
+  });
+  loose.forEach(b => out.push({ key: "solo~" + b.id, combined: false, bets: [b], sourceBetIds: [b.id],
+    eventDate: b.eventDate, grossStake: Number(b.stake) || 0, worst: -(Number(b.stake) || 0) }));
+  return out;
+}
+
+
+
+// ---- POSITION SELF-TESTS (run `btTestPositions()` in the browser console) ----
+function btTestPositions(){
+  var p=0,f=0;const B=o=>Object.assign({id:"t"+Math.random().toString(36).slice(2,8),betType:"Straight",result:null,placedAt:"2026-06-01T10:00"},o);
+  const comb=bs=>buildOpenPositions(bs).filter(x=>x.combined);
+  const reg=(pos,frag)=>pos.regions.find(r=>r.label.toLowerCase().indexOf(frag.toLowerCase())>=0);
+  const eq=(n,a,e)=>{const v=typeof a==="number"?r2(a):a;if(v===e){p++;console.log("PASS "+n);}else{f++;console.error("FAIL "+n+" got",v,"expected",e);}};
+  const ok=(n,c)=>{if(c){p++;console.log("PASS "+n);}else{f++;console.error("FAIL "+n);}};
+  var g=comb([B({sport:"Golf",league:"PGA Tour",eventDate:"2026-06-18",tournament:"US Open",marketType:"Matchup",matchP1:"Koivun",matchP2:"Cameron Young",matchSide:"p1",stake:1035,toWin:1374.60,placedAt:"2026-06-17T09:00"}),B({sport:"Golf",league:"PGA Tour",eventDate:"2026-06-18",tournament:"US Open",marketType:"Matchup",matchP1:"Koivun",matchP2:"Cameron Young",matchSide:"p2",stake:854,toWin:700,placedAt:"2026-06-17T15:00"})])[0];
+  eq("golf Koivun net",reg(g,"koivun wins").net,520.6);eq("golf Young net",reg(g,"cameron young wins").net,-335);eq("golf effective odds",g.effAmer,155);
+  var ev={sport:"Football",league:"NCAAF",eventDate:"2026-09-05",awayTeam:"Clemson",homeTeam:"Miami",marketType:"Spread"};
+  var m=comb([B(Object.assign({},ev,{betSide:"away",line:3,stake:550,toWin:500,placedAt:"2026-09-01T10:00"})),B(Object.assign({},ev,{betSide:"home",line:-1,stake:525,toWin:500,placedAt:"2026-09-02T10:00"}))])[0];
+  eq("middle kind",m.kind,"Middle");eq("Clemson wins",reg(m,"clemson wins").net,-25);eq("Miami by exactly 1",reg(m,"miami by exactly 1").net,500);
+  eq("Miami by exactly 2",reg(m,"miami by exactly 2").net,1000);eq("Miami by exactly 3",reg(m,"miami by exactly 3").net,500);eq("Miami by 4+",reg(m,"miami by 4+").net,-50);
+  var tv={sport:"Football",league:"NFL",eventDate:"2026-09-13",awayTeam:"Jets",homeTeam:"Bills",marketType:"Total"};
+  var t=comb([B(Object.assign({},tv,{overUnder:"Over",line:47,stake:110,toWin:100})),B(Object.assign({},tv,{overUnder:"Under",line:50,stake:110,toWin:100,placedAt:"2026-09-10T12:00"}))])[0];
+  eq("total regions",t.regions.length,5);eq("exactly 47",reg(t,"exactly 47").net,100);eq("48-49",reg(t,"48-49").net,200);
+  ok("same-side duplicates stay separate",comb([B(Object.assign({},tv,{marketType:"Moneyline",betSide:"away",stake:100,toWin:120})),B(Object.assign({},tv,{marketType:"Moneyline",betSide:"away",stake:50,toWin:60,placedAt:"2026-09-02T10:00"}))]).length===0);
+  console.log("=== "+p+" passed, "+f+" failed ===");return{passed:p,failed:f};
+}
+if(typeof window!=="undefined")window.btTestPositions=btTestPositions;
+
 // ---- TEAM/PLAYER DATA ----
 const T_NFL="Arizona Cardinals,Atlanta Falcons,Baltimore Ravens,Buffalo Bills,Carolina Panthers,Chicago Bears,Cincinnati Bengals,Cleveland Browns,Dallas Cowboys,Denver Broncos,Detroit Lions,Green Bay Packers,Houston Texans,Indianapolis Colts,Jacksonville Jaguars,Kansas City Chiefs,Las Vegas Raiders,Los Angeles Chargers,Los Angeles Rams,Miami Dolphins,Minnesota Vikings,New England Patriots,New Orleans Saints,New York Giants,New York Jets,Philadelphia Eagles,Pittsburgh Steelers,San Francisco 49ers,Seattle Seahawks,Tampa Bay Buccaneers,Tennessee Titans,Washington Commanders".split(",");
 const T_NBA="Atlanta Hawks,Boston Celtics,Brooklyn Nets,Charlotte Hornets,Chicago Bulls,Cleveland Cavaliers,Dallas Mavericks,Denver Nuggets,Detroit Pistons,Golden State Warriors,Houston Rockets,Indiana Pacers,Los Angeles Clippers,Los Angeles Lakers,Memphis Grizzlies,Miami Heat,Milwaukee Bucks,Minnesota Timberwolves,New Orleans Pelicans,New York Knicks,Oklahoma City Thunder,Orlando Magic,Philadelphia 76ers,Phoenix Suns,Portland Trail Blazers,Sacramento Kings,San Antonio Spurs,Toronto Raptors,Utah Jazz,Washington Wizards".split(",");
@@ -93,6 +364,7 @@ function App(){
   const addBet=useCallback(bet=>{const nb={...bet,id:uid(),createdAt:new Date().toISOString()};setBets(p=>[nb,...p]);notifyBet(nb);},[notifyBet]);
   const updateBet=useCallback((id,u)=>setBets(p=>p.map(b=>b.id===id?{...b,...u,updatedAt:new Date().toISOString()}:b)),[]);
   const deleteBet=useCallback(id=>setBets(p=>p.filter(b=>b.id!==id)),[]);
+  const separateBet=useCallback(id=>setBets(p=>p.map(b=>b.id===id?{...b,noCombine:true}:b)),[]);
   const settleBet=useCallback((id,result,cashout,gradeDate,rrData,extra)=>{const sd=gradeDate||new Date().toISOString();setBets(p=>p.map(b=>{if(b.id!==id)return b;const ex=extra||{};if(rrData){return{...b,...ex,result,netProfit:rrData.netProfit,rrLegsWon:rrData.rrLegsWon,rrReturn:rrData.rrReturn,settledAt:sd};}if(b.bookEntries&&b.bookEntries.length){const se=b.bookEntries.map(e=>({...e,result,netProfit:calc.netProfit(result,e.stake,e.toWin,cashout?cashout*e.stake/b.stake:null)}));return{...b,...ex,result,netProfit:se.reduce((s,e)=>s+(e.netProfit||0),0),cashoutAmount:cashout,settledAt:sd,bookEntries:se};}return{...b,...ex,result,netProfit:calc.netProfit(result,b.stake,b.toWin,cashout),cashoutAmount:cashout,settledAt:sd};}));},[]);
   const applyFilters=useCallback((list)=>list.filter(b=>{const f=filters;if(f.sport&&b.sport!==f.sport)return false;if(f.league&&b.league!==f.league)return false;if(f.book){if(b.bookEntries&&b.bookEntries.length){if(!b.bookEntries.some(e=>e.book===f.book))return false;}else if(b.book!==f.book)return false;}if(f.holder&&b.holder!==f.holder)return false;if(f.betType&&b.betType!==f.betType)return false;if(f.marketType&&b.marketType!==f.marketType)return false;if(f.isLive==="true"&&!b.isLive)return false;if(f.isLive==="false"&&b.isLive)return false;if(f.overUnder&&b.overUnder!==f.overUnder)return false;const filterDate=b.result&&b.settledAt?b.settledAt:b.placedAt;if(f.dateFrom&&filterDate<f.dateFrom)return false;if(f.dateTo&&filterDate>f.dateTo+"T23:59:59")return false;if(f.tag&&!(b.tags||[]).includes(f.tag))return false;if(f.team){const t=f.team.toLowerCase();if(!(b.awayTeam||"").toLowerCase().includes(t)&&!(b.homeTeam||"").toLowerCase().includes(t))return false;}if(f.player){const p=f.player.toLowerCase();if(!(b.participant||"").toLowerCase().includes(p)&&!(b.matchP1||"").toLowerCase().includes(p)&&!(b.matchP2||"").toLowerCase().includes(p)&&!(b.selection||"").toLowerCase().includes(p))return false;}if(f.search){const s=f.search.toLowerCase();if(![b.selection,b.notes,b.book,...(b.legs||[]).map(l=>l.selection),...(b.bookEntries||[]).map(e=>e.book)].filter(Boolean).join(" ").toLowerCase().includes(s))return false;}return true;}),[filters]);
   const openBets=useMemo(()=>applyFilters(bets.filter(b=>!b.result)),[bets,applyFilters]);
@@ -109,7 +381,7 @@ function App(){
       <div style={{maxWidth:1400,margin:"0 auto",padding:"0 16px 80px"}}>
         {view==="dashboard"&&<Dash bets={allFiltered} allBets={bets} settings={settings} filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags}/>}
         <div style={{display:view==="new"?"block":"none"}}><BetForm key={formKey} books={books} holders={holders} tags={tags} settings={settings} lastBet={lastBet} repeatFrom={repeatBet} lastGolfTourney={lastGolfTourney} customTeams={customTeams} customPlayers={customPlayers} customMarkets={customMarkets} setCustomTeams={setCustomTeams} setCustomPlayers={setCustomPlayers} setCustomMarkets={setCustomMarkets} onSave={b=>{addBet(b);setFormKey(k=>k+1);setRepeatBet(null);setView("open");}} onCancel={()=>{setRepeatBet(null);setView("open");}} sports={DEFAULT_SPORTS}/></div>
-        {view==="open"&&<OpenBets bets={openBets} allBets={bets} filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags} settings={settings} onSettle={settleBet} onDelete={deleteBet} onEdit={b=>{setEditBet(b);setView("edit");}} onNew={()=>setView("new")} onRepeat={b=>{setRepeatBet(b);setFormKey(k=>k+1);setView("new");}}/>}
+        {view==="open"&&<OpenBets bets={openBets} allBets={bets} filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags} settings={settings} onSettle={settleBet} onSeparate={separateBet} onDelete={deleteBet} onEdit={b=>{setEditBet(b);setView("edit");}} onNew={()=>setView("new")} onRepeat={b=>{setRepeatBet(b);setFormKey(k=>k+1);setView("new");}}/>}
         {view==="history"&&<History bets={settledBets} allBets={bets} filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags} settings={settings} onDelete={deleteBet} onEdit={b=>{setEditBet(b);setView("edit");}} onRepeat={b=>{setRepeatBet(b);setFormKey(k=>k+1);setView("new");}} updateBet={updateBet}/>}
         {view==="edit"&&editBet&&<BetForm bet={editBet} books={books} holders={holders} tags={tags} settings={settings} lastGolfTourney={lastGolfTourney} customTeams={customTeams} customPlayers={customPlayers} customMarkets={customMarkets} setCustomTeams={setCustomTeams} setCustomPlayers={setCustomPlayers} setCustomMarkets={setCustomMarkets} onSave={b=>{updateBet(editBet.id,b);setView(editBet.result?"history":"open");}} onCancel={()=>setView(editBet.result?"history":"open")} sports={DEFAULT_SPORTS} isEdit/>}
         {view==="settings"&&<SetP settings={settings} setSettings={setSettings} books={books} setBooks={setBooks} holders={holders} setHolders={setHolders} tags={tags} setTags={setTags} bets={bets} setBets={setBets} customMarkets={customMarkets} setCustomMarkets={setCustomMarkets}/>}
@@ -185,23 +457,15 @@ function BetDetail({bet}){
 }
 
 // ---- OPEN BETS (pending, grade here) ----
-function OpenBets({bets,allBets,filters,setFilters,books,holders,tags,settings,onSettle,onDelete,onEdit,onNew,onRepeat}){
+function OpenBets({bets,allBets,filters,setFilters,books,holders,tags,settings,onSettle,onDelete,onEdit,onNew,onRepeat,onSeparate}){
   const[settleId,setSettleId]=useState(null);const[settleResult,setSettleResult]=useState("win");const[cashoutStr,setCashoutStr]=useState("");const[gradeDate,setGradeDate]=useState(nowET().slice(0,10));const[expandedId,setExpandedId]=useState(null);const[confirmDeleteId,setConfirmDeleteId]=useState(null);const[showFutures,setShowFutures]=useState(false);const[rrLegsWon,setRrLegsWon]=useState("");const[rrReturn,setRrReturn]=useState("");const[gradeClosing,setGradeClosing]=useState("");const[gradeManualCLV,setGradeManualCLV]=useState("");
   const visibleBets=useMemo(()=>showFutures?bets.filter(b=>b.betType==="Futures"):bets.filter(b=>b.betType!=="Futures"),[bets,showFutures]);
   const futuresCount=useMemo(()=>bets.filter(b=>b.betType==="Futures").length,[bets]);
   const fmtEventDate=(d)=>{if(!d)return"No Date";const today=nowET().slice(0,10);const t=new Date();const tomorrowD=new Date(t);tomorrowD.setDate(t.getDate()+1);const tmrw=tomorrowD.toISOString().slice(0,10);const yesterdayD=new Date(t);yesterdayD.setDate(t.getDate()-1);const yday=yesterdayD.toISOString().slice(0,10);if(d===today)return"Today";if(d===tmrw)return"Tomorrow";if(d===yday)return"Yesterday";const dt=new Date(d+"T12:00:00");return dt.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});};
-  const grouped=useMemo(()=>{const s=[...visibleBets].sort((a,b)=>(a.eventDate||a.placedAt||"").localeCompare(b.eventDate||b.placedAt||""));const dateGroups=[];const seenDates={};s.forEach(b=>{const ed=b.eventDate||b.placedAt?.slice(0,10)||"";const eventKey=(b.awayTeam&&b.homeTeam)?ed+"|"+b.awayTeam+"@"+b.homeTeam:"";if(!seenDates[ed]){seenDates[ed]={date:ed,events:[]};dateGroups.push(seenDates[ed]);}const dg=seenDates[ed];if(eventKey){let eg=dg.events.find(e=>e.key===eventKey);if(!eg){eg={key:eventKey,label:b.awayTeam+" @ "+b.homeTeam,bets:[]};dg.events.push(eg);}eg.bets.push(b);}else{dg.events.push({key:b.id,label:null,bets:[b]});}});return dateGroups;},[visibleBets]);
-  return(<div style={{paddingTop:20}}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><h2 style={{margin:0,fontSize:18,fontWeight:600}}>Open Bets <span style={{color:"#3b82f6",fontWeight:400,fontSize:14}}>({visibleBets.length})</span></h2><div style={{display:"flex",gap:8,alignItems:"center"}}><button onClick={()=>setShowFutures(!showFutures)} style={{...BS,padding:"6px 12px",background:showFutures?"#2e2a1a":"transparent",color:showFutures?"#f59e0b":"#6b6b8a",border:"1px solid "+(showFutures?"#f59e0b44":"#1e1e2e"),fontSize:11,fontWeight:600}}>{showFutures?"← Bets":"Futures"}{!showFutures&&futuresCount>0&&<span style={{marginLeft:4,background:"#f59e0b33",color:"#f59e0b",borderRadius:6,padding:"0 5px",fontSize:10}}>{futuresCount}</span>}</button><button onClick={onNew} style={BP}>+ New Bet</button></div></div>
-    <FilterBar filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags} allBets={allBets}/>
-    {grouped.length===0?<div style={{textAlign:"center",padding:"60px 20px",color:"#525280"}}><div style={{fontSize:48,marginBottom:12}}>{"🟢"}</div><div>No open bets</div></div>:(
-      <div style={{display:"flex",flexDirection:"column",gap:4}}>
-        {grouped.map(dg=>(<React.Fragment key={dg.date}>
-          <div style={{fontSize:12,fontWeight:700,color:"#3b82f6",padding:"12px 4px 4px",borderBottom:"1px solid #1e1e2e",marginBottom:4}}>{fmtEventDate(dg.date)}</div>
-          {dg.events.map(g=>(<React.Fragment key={g.key}>
-            {g.label&&g.bets.length>1&&<div style={{fontSize:11,fontWeight:600,color:"#818cf8",padding:"6px 4px 2px",textTransform:"uppercase",letterSpacing:"0.5px"}}>{g.label} <span style={{color:"#525280",fontWeight:400}}>({g.bets.length})</span></div>}
-            {g.bets.map(bet=>{const isExp=expandedId===bet.id;const isSett=settleId===bet.id;return(
-          <BetRow key={bet.id} bet={bet} isExp={isExp} onToggle={()=>setExpandedId(isExp?null:bet.id)}>
+  const positions=useMemo(()=>buildOpenPositions(visibleBets),[visibleBets]);
+  const ticketCount=visibleBets.length;
+  const grouped=useMemo(()=>{const s=[...positions].sort((a,b)=>{const ra=a.bets[0],rb=b.bets[0];return ((ra.eventDate||ra.placedAt||"").localeCompare(rb.eventDate||rb.placedAt||""));});const dateGroups=[];const seenDates={};s.forEach(p=>{const b=p.bets[0];const ed=b.eventDate||b.placedAt?.slice(0,10)||"";const eventKey=(b.awayTeam&&b.homeTeam)?ed+"|"+normalizeName(b.awayTeam)+"@"+normalizeName(b.homeTeam):"";if(!seenDates[ed]){seenDates[ed]={date:ed,events:[]};dateGroups.push(seenDates[ed]);}const dg=seenDates[ed];if(eventKey){let eg=dg.events.find(e=>e.key===eventKey);if(!eg){eg={key:eventKey,label:b.awayTeam+" @ "+b.homeTeam,items:[]};dg.events.push(eg);}eg.items.push(p);}else{dg.events.push({key:p.key,label:null,items:[p]});}});return dateGroups;},[positions]);
+  const betBody=(bet)=>{const isSett=settleId===bet.id;return(<>
             <BetDetail bet={bet}/>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               {!isSett&&<button onClick={e=>{e.stopPropagation();setSettleId(bet.id);setSettleResult("win");setCashoutStr("");setGradeDate(bet.eventDate||nowET().slice(0,10));setRrLegsWon("");setRrReturn("");setGradeClosing(bet.closingOdds!=null?""+bet.closingOdds:"");setGradeManualCLV(bet.manualCLV!=null?""+bet.manualCLV:"");}} style={{...BS,background:"#1a2e1a",color:"#22c55e"}}>Grade</button>}
@@ -224,12 +488,86 @@ function OpenBets({bets,allBets,filters,setFilters,books,holders,tags,settings,o
               <div style={{display:"flex",gap:8}}><button onClick={()=>{const extra={};const cl=gradeClosing?parseInt(gradeClosing)||null:null;if(cl!=null)extra.closingOdds=cl;const mc=gradeManualCLV?parseFloat(gradeManualCLV)||null:null;if(mc!=null)extra.manualCLV=mc;onSettle(bet.id,settleResult,settleResult==="cashout"?parseFloat(cashoutStr)||0:null,gradeDate+"T12:00:00.000Z",null,Object.keys(extra).length?extra:null);setSettleId(null);}} style={{...BP,fontSize:12}}>Confirm</button><button onClick={()=>setSettleId(null)} style={BS}>Cancel</button></div>
               </div>)}
             </div>}
-          </BetRow>
-        );})}
+  </>);};
+  return(<div style={{paddingTop:20}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><h2 style={{margin:0,fontSize:18,fontWeight:600}}>Open Positions <span style={{color:"#3b82f6",fontWeight:400,fontSize:14}}>({positions.length})</span><span style={{color:"#525280",fontWeight:400,fontSize:12}}>{DOT+ticketCount+" ticket"+(ticketCount===1?"":"s")}</span></h2><div style={{display:"flex",gap:8,alignItems:"center"}}><button onClick={()=>setShowFutures(!showFutures)} style={{...BS,padding:"6px 12px",background:showFutures?"#2e2a1a":"transparent",color:showFutures?"#f59e0b":"#6b6b8a",border:"1px solid "+(showFutures?"#f59e0b44":"#1e1e2e"),fontSize:11,fontWeight:600}}>{showFutures?"← Bets":"Futures"}{!showFutures&&futuresCount>0&&<span style={{marginLeft:4,background:"#f59e0b33",color:"#f59e0b",borderRadius:6,padding:"0 5px",fontSize:10}}>{futuresCount}</span>}</button><button onClick={onNew} style={BP}>+ New Bet</button></div></div>
+    <FilterBar filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags} allBets={allBets}/>
+    {grouped.length===0?<div style={{textAlign:"center",padding:"60px 20px",color:"#525280"}}><div style={{fontSize:48,marginBottom:12}}>{"\u{1F7E2}"}</div><div>No open bets</div></div>:(
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        {grouped.map(dg=>(<React.Fragment key={dg.date}>
+          <div style={{fontSize:12,fontWeight:700,color:"#3b82f6",padding:"12px 4px 4px",borderBottom:"1px solid #1e1e2e",marginBottom:4}}>{fmtEventDate(dg.date)}</div>
+          {dg.events.map(g=>(<React.Fragment key={g.key}>
+            {g.label&&g.items.length>1&&<div style={{fontSize:11,fontWeight:600,color:"#818cf8",padding:"6px 4px 2px",textTransform:"uppercase",letterSpacing:"0.5px"}}>{g.label} <span style={{color:"#525280",fontWeight:400}}>({g.items.length})</span></div>}
+            {g.items.map(pos=>{
+              if(!pos.combined){const bet=pos.bets[0];const isExp=expandedId===bet.id;return(
+                <BetRow key={bet.id} bet={bet} isExp={isExp} onToggle={()=>setExpandedId(isExp?null:bet.id)}>{betBody(bet)}</BetRow>
+              );}
+              const isExp=expandedId===pos.key;
+              return(<PositionCard key={pos.key} pos={pos} isExp={isExp} onToggle={()=>setExpandedId(isExp?null:pos.key)} betBody={betBody} onSeparate={onSeparate}/>);
+            })}
         </React.Fragment>))}
         </React.Fragment>))}
       </div>
     )}
+  </div>);
+}
+
+// ---- POSITION CARD (derived combined view; source bets stay intact) ----
+const POS_BADGE={"Arbitrage":{bg:"#0d1a0d",fg:"#22c55e",t:"ARBITRAGE"},"Middle":{bg:"#1a1530",fg:"#a78bfa",t:"MIDDLE"},"Hedged position":{bg:"#0d1520",fg:"#38bdf8",t:"HEDGE"},"Reversed position":{bg:"#2e2a1a",fg:"#f59e0b",t:"REVERSED"},"Locked loss":{bg:"#1a0d0d",fg:"#ef4444",t:"LOCKED LOSS"},"Flat / fully hedged":{bg:"#15151f",fg:"#a0a0b8",t:"FLAT"},"Two-sided exposure":{bg:"#1a1a2e",fg:"#818cf8",t:"TWO-SIDED"}};
+function PositionCard({pos,isExp,onToggle,betBody,onSeparate}){
+  const bd=POS_BADGE[pos.kind]||POS_BADGE["Two-sided exposure"];
+  const em=DEFAULT_SPORTS.find(s=>s.name===pos.bets[0].sport)?.emoji||"";
+  const guaranteed=pos.kind==="Arbitrage"?pos.worst:pos.kind==="Locked loss"?pos.best:null;
+  const bothWin=pos.regions.filter(r=>r.results.every(x=>x==="win"));
+  return(<div style={{background:"#111118",border:"1px solid "+(isExp?"#2a2a3e":bd.fg+"33"),borderRadius:10,overflow:"hidden"}}>
+    <div onClick={onToggle} style={{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",gap:10}}>
+      <div style={{width:4,height:44,borderRadius:2,background:bd.fg,flexShrink:0}}/>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}>
+          <span style={{fontSize:9,background:bd.bg,color:bd.fg,padding:"1px 6px",borderRadius:4,fontWeight:700,letterSpacing:"0.5px"}}>{bd.t}</span>
+          <span style={{fontSize:12,color:"#6b6b8a"}}>{pos.eventDate}</span><span style={{fontSize:11,color:"#525280"}}>{"·"}</span>
+          <span style={{fontSize:12,color:"#a0a0b8"}}>{pos.marketType}</span><span style={{fontSize:11,color:"#525280"}}>{"·"}</span>
+          <span style={{fontSize:11,color:"#818cf8"}}>{pos.bets.length} wagers</span>
+          {pos.warnings.length>0&&<span style={{fontSize:9,background:"#2e2a1a",color:"#f59e0b",padding:"1px 5px",borderRadius:4,fontWeight:600}}>{"\u26A0"}</span>}
+        </div>
+        <div style={{fontSize:14,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{em+" "}{pos.eventLabel}</div>
+        <div style={{fontSize:11,color:"#525280",marginTop:1}}>{"Risked $"+fmt(pos.grossStake)}{pos.effAmer!=null?DOT+"Effective "+fmtOdds(pos.effAmer):""}{pos.summary?DOT+pos.summary:""}</div>
+      </div>
+      <div style={{textAlign:"right",flexShrink:0,minWidth:86}}>
+        <div style={{fontSize:13,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:"#22c55e"}}>{fmtUsd(r2(pos.best))}</div>
+        <div style={{fontSize:12,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:pos.worst>=0?"#22c55e":"#ef4444"}}>{fmtUsd(r2(pos.worst))}</div>
+      </div>
+    </div>
+    {isExp&&(<div style={{padding:"0 14px 14px",borderTop:"1px solid #1a1a28"}}>
+      {pos.warnings.map((w,i)=><div key={i} style={{marginTop:10,fontSize:11,color:"#f59e0b",background:"#1a1508",border:"1px solid #f59e0b33",borderRadius:6,padding:"6px 10px"}}>{"\u26A0 "+w}</div>)}
+      {guaranteed!=null&&<div style={{marginTop:10,fontSize:13,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:guaranteed>=0?"#22c55e":"#ef4444"}}>{(guaranteed>=0?"Guaranteed profit: ":"Guaranteed loss: ")+fmtUsd(r2(guaranteed))}</div>}
+      {bothWin.length>0&&<div style={{marginTop:8,fontSize:12,color:"#a0a0b8"}}><b style={{color:"#22c55e"}}>Both win:</b> {bothWin.map(m=>m.label).join(", ")}</div>}
+      <div style={{marginTop:10,fontSize:10,color:"#6b6b8a",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>Outcome Table</div>
+      <div style={{border:"1px solid #1a1a28",borderRadius:8,overflow:"hidden"}}>
+        <div style={{display:"flex",background:"#0d0d14",padding:"6px 10px",fontSize:10,color:"#6b6b8a",fontWeight:600,textTransform:"uppercase"}}>
+          <span style={{flex:1}}>Final outcome</span>{pos.bets.map((b,i)=><span key={i} style={{width:74,textAlign:"center"}}>{"W"+(i+1)}</span>)}<span style={{width:80,textAlign:"right"}}>Net</span>
+        </div>
+        {pos.regions.map((r,i)=>(<div key={i} style={{display:"flex",padding:"6px 10px",fontSize:12,color:"#a0a0b8",borderTop:"1px solid #1a1a28",background:r.results.every(x=>x==="win")?"#0d1a0d":"transparent"}}>
+          <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.label}</span>
+          {r.results.map((rs,j)=><span key={j} style={{width:74,textAlign:"center",fontSize:11,color:rs==="win"?"#22c55e":rs==="loss"?"#ef4444":"#a3a3a3"}}>{rs==="win"?"Win":rs==="loss"?"Loss":"Push"}</span>)}
+          <span style={{width:80,textAlign:"right",fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:r.net>=0?"#22c55e":"#ef4444"}}>{fmtUsd(r2(r.net))}</span>
+        </div>))}
+      </div>
+      <div style={{marginTop:12,fontSize:10,color:"#6b6b8a",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px"}}>Underlying Wagers</div>
+      <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:6}}>
+        {pos.bets.map((b,i)=>(<div key={b.id} style={{background:"#0d0d14",border:"1px solid #1a1a28",borderRadius:8,padding:"8px 10px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+            <span style={{fontSize:10,color:"#525280",fontFamily:"'JetBrains Mono',monospace",fontWeight:600}}>{"W"+(i+1)}</span>
+            <span style={{fontSize:13,fontWeight:500,flex:1,minWidth:0}}>{b.selection}</span>
+            <span style={{fontSize:12,fontFamily:"'JetBrains Mono',monospace",color:"#a0a0b8"}}>{fmtOdds(b.oddsAmer)}</span>
+            <span style={{fontSize:12,fontFamily:"'JetBrains Mono',monospace",color:"#6b6b8a"}}>{"$"+fmt(b.stake)+" \u2192 $"+fmt(b.toWin)}</span>
+          </div>
+          <div style={{fontSize:11,color:"#525280",marginBottom:6}}>{b.book}{b.holder?DOT+b.holder:""}{b.line!=null?DOT+"Line "+b.line:""}{b.placedAt?DOT+b.placedAt.slice(0,16).replace("T"," "):""}</div>
+          {onSeparate&&<button onClick={e=>{e.stopPropagation();onSeparate(b.id);}} style={{...BS,fontSize:10,padding:"3px 8px",color:"#f59e0b",marginBottom:6}}>Don't combine this bet</button>}
+          {betBody(b)}
+        </div>))}
+      </div>
+    </div>)}
   </div>);
 }
 
@@ -284,13 +622,14 @@ function Dash({bets,allBets,settings,filters,setFilters,books,holders,tags}){
   const settled=bets.filter(b=>b.result&&b.result!=="void"&&b.result!=="push");const settledAll=bets.filter(b=>b.result);
   const np=settled.reduce((s,b)=>s+(b.netProfit||0),0),tr=settled.reduce((s,b)=>s+(b.stake||0),0);const sNG=settled.filter(b=>b.sport!=="Golf");const wins=sNG.filter(b=>b.result==="win").length,losses=sNG.filter(b=>b.result==="loss").length,units=np/(settings.unitSize||100),roi=tr>0?(np/tr)*100:0,winPct=sNG.length>0?(wins/sNG.length)*100:0,avgStake=sNG.length>0?sNG.reduce((s,b)=>s+(b.stake||0),0)/sNG.length:0,pending=bets.filter(b=>!b.result),pendCount=pending.length,openExposure=pending.reduce((s,b)=>s+(b.stake||0),0);
   const avgOddsCalc=useMemo(()=>{const withOdds=sNG.filter(b=>b.oddsDec&&b.oddsDec>0);if(!withOdds.length)return 0;const avgDec=withOdds.reduce((s,b)=>s+b.oddsDec,0)/withOdds.length;return calc.decToAmer(avgDec);},[sNG]);
+  const worstCase=useMemo(()=>{try{return buildOpenPositions(pending).reduce((s,p)=>s+Math.min(0,p.combined?p.worst:-(Number(p.bets[0].stake)||0)),0);}catch(e){return -openExposure;}},[pending,openExposure]);
   const profitOT=useMemo(()=>{const s2=settledAll.filter(b=>b.netProfit!=null).sort((a,b)=>((a.settledAt||a.placedAt)||"").localeCompare((b.settledAt||b.placedAt)||""));let cum=0;const bd={};s2.forEach(b=>{const d=dayKey(b.settledAt||b.placedAt||b.createdAt);cum+=b.netProfit||0;bd[d]=cum;});return Object.entries(bd).map(([d,v])=>({date:d,profit:Math.round(v*100)/100}));},[settledAll]);
   const byBook=useMemo(()=>{const m={};settled.forEach(b=>{if(b.bookEntries&&b.bookEntries.length)b.bookEntries.forEach(e=>{const k=e.book||"?";if(!m[k])m[k]={name:k,profit:0,count:0};m[k].profit+=e.netProfit||0;m[k].count++;});else{const k=b.book||"?";if(!m[k])m[k]={name:k,profit:0,count:0};m[k].profit+=b.netProfit||0;m[k].count++;}});return Object.values(m).sort((a,b)=>b.profit-a.profit);},[settled]);
   const mkB=fn=>{const m={};settled.forEach(b=>{const k=fn(b)||"?";if(!m[k])m[k]={name:k,profit:0,count:0};m[k].profit+=b.netProfit||0;m[k].count++;});return Object.values(m).sort((a,b)=>b.profit-a.profit);};
   const bySport=useMemo(()=>mkB(b=>b.sport),[settled]),byType=useMemo(()=>mkB(b=>b.betType),[settled]);
   const byHolder=useMemo(()=>{const m={};settled.forEach(b=>{if(b.bookEntries&&b.bookEntries.length)b.bookEntries.forEach(e=>{const k=e.holder||"Main";if(!m[k])m[k]={name:k,profit:0,count:0};m[k].profit+=e.netProfit||0;m[k].count++;});else{const k=b.holder||"Main";if(!m[k])m[k]={name:k,profit:0,count:0};m[k].profit+=b.netProfit||0;m[k].count++;}});return Object.values(m).sort((a,b)=>b.profit-a.profit);},[settled]);
   const roiOT=useMemo(()=>{const w={};settled.forEach(b=>{const d=new Date(b.settledAt||b.placedAt||b.createdAt),ws=new Date(d);ws.setDate(d.getDate()-d.getDay());const wk=ws.toISOString().slice(0,10);if(!w[wk])w[wk]={risked:0,profit:0};w[wk].risked+=b.stake||0;w[wk].profit+=b.netProfit||0;});return Object.entries(w).sort().map(([k,v])=>({week:k,roi:v.risked>0?Math.round(v.profit/v.risked*10000)/100:0,profit:Math.round(v.profit*100)/100}));},[settled]);
-  const kpis=[{l:"Net Profit",v:fmtUsd(np),c:np>=0?"#22c55e":"#ef4444"},{l:"Record",v:wins+"-"+losses,c:"#c0c0d0"},{l:"Win %",v:fmt(winPct,1)+"%",c:"#c0c0d0"},{l:"Units",v:(units>=0?"+":"")+fmt(units,1)+"u",c:units>=0?"#22c55e":"#ef4444"},{l:"ROI",v:(roi>=0?"+":"")+fmt(roi,1)+"%",c:roi>=0?"#22c55e":"#ef4444"},{l:"Total Risked",v:"$"+fmt(tr),c:"#c0c0d0"},{l:"Avg Odds",v:fmtOdds(avgOddsCalc),c:"#c0c0d0"},{l:"Avg Stake",v:"$"+fmt(avgStake),c:"#c0c0d0"},{l:"Open Bets",v:""+pendCount,c:"#3b82f6"},{l:"At Risk",v:"$"+fmt(openExposure),c:"#f59e0b"}];
+  const kpis=[{l:"Net Profit",v:fmtUsd(np),c:np>=0?"#22c55e":"#ef4444"},{l:"Record",v:wins+"-"+losses,c:"#c0c0d0"},{l:"Win %",v:fmt(winPct,1)+"%",c:"#c0c0d0"},{l:"Units",v:(units>=0?"+":"")+fmt(units,1)+"u",c:units>=0?"#22c55e":"#ef4444"},{l:"ROI",v:(roi>=0?"+":"")+fmt(roi,1)+"%",c:roi>=0?"#22c55e":"#ef4444"},{l:"Total Risked",v:"$"+fmt(tr),c:"#c0c0d0"},{l:"Avg Odds",v:fmtOdds(avgOddsCalc),c:"#c0c0d0"},{l:"Avg Stake",v:"$"+fmt(avgStake),c:"#c0c0d0"},{l:"Open Bets",v:""+pendCount,c:"#3b82f6"},{l:"Gross Wagered",v:"$"+fmt(openExposure),c:"#f59e0b"},{l:"Worst Case",v:fmtUsd(r2(worstCase)),c:worstCase<0?"#ef4444":"#22c55e"}];
   const tt={background:"#1a1a2e",border:"1px solid #2a2a3e",borderRadius:8,fontSize:12};
   return(<div style={{paddingTop:20}}>
     <FilterBar filters={filters} setFilters={setFilters} books={books} holders={holders} tags={tags} showResult allBets={allBets}/>
