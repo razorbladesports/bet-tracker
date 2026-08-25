@@ -142,13 +142,14 @@ function marginRangeLabel(a, b, openLo, openHi, home, away, ties) {
     if (b === 0) return ties ? away + " wins or game ties" : away + " wins";
     if (b === -1 && !ties) return away + " wins";          // margin 0 unreachable
     if (b < 0) return away + " by " + (-b) + "+";
-    return home + " by " + b + " or less";
+    // range reaches past zero: spell out that the other side winning is included
+    return home + " by " + b + " or less" + (ties ? ", tie," : "") + " or " + away + " wins";
   }
   if (openHi) {
     if (a === 0) return ties ? "Game ties or " + home + " wins" : home + " wins";
     if (a === 1 && !ties) return home + " wins";           // margin 0 unreachable
     if (a > 0) return home + " by " + a + "+";
-    return away + " by " + (-a) + " or less";
+    return away + " by " + (-a) + " or less" + (ties ? ", tie," : "") + " or " + home + " wins";
   }
   if (a === b) return a === 0 ? "Game ties" : (a > 0 ? home : away) + " by exactly " + Math.abs(a);
   if (a > 0 && b > 0) return home + " by " + a + "-" + b;
@@ -212,6 +213,9 @@ function classifyPosition(regions, legs, orderedBets) {
   if (nets.every(n => Math.abs(n) <= POS_EPS)) return "Flat / fully hedged";
   if (nets.every(n => n > POS_EPS)) return "Arbitrage";
   if (nets.every(n => n < -POS_EPS)) return "Locked loss";
+  // Same side on different numbers is not a hedge or a middle — it is one directional
+  // position laddered across numbers, so label it as such before the middle check.
+  if (new Set(legs.map(l => l.side)).size < 2) return "Same-side ladder";
   if (regions.length > 2 || distinct.length > 2) return "Middle";
   const first = orderedBets[0];
   const idx = legs.findIndex(l => l.betId === first.id);
@@ -264,7 +268,12 @@ function buildOpenPositions(openBets) {
     const canon = { home: ctx.homen, away: ctx.awayn };
     const legs = ordered.map(b => toLeg(b, canon));
     if (legs.some(l => !l)) { ordered.forEach(b => loose.push(b)); return; }   // unmappable -> stay separate
-    if (new Set(legs.map(l => l.side)).size < 2) { ordered.forEach(b => loose.push(b)); return; } // same-side only
+    // Combine when the legs actually settle differently: either opposing sides, or the
+    // same side spread across different numbers (e.g. -6.5 and -7 straddling a key number).
+    // Same side on the identical number adds no new settlement region, so those stay separate.
+    const sides = new Set(legs.map(l => l.side));
+    const thresholds = new Set(legs.filter(l => l.mode === "numeric").map(l => l.threshold));
+    if (sides.size < 2 && thresholds.size < 2) { ordered.forEach(b => loose.push(b)); return; }
     const { regions, best, worst } = calculatePositionOutcomes(legs, ctx);
     const kind = classifyPosition(regions, legs, ordered);
     const warnings = [];
@@ -302,6 +311,10 @@ function btTestPositions(){
   var tv={sport:"Football",league:"NFL",eventDate:"2026-09-13",awayTeam:"Jets",homeTeam:"Bills",marketType:"Total"};
   var t=comb([B(Object.assign({},tv,{overUnder:"Over",line:47,stake:110,toWin:100})),B(Object.assign({},tv,{overUnder:"Under",line:50,stake:110,toWin:100,placedAt:"2026-09-10T12:00"}))])[0];
   eq("total regions",t.regions.length,5);eq("exactly 47",reg(t,"exactly 47").net,100);eq("48-49",reg(t,"48-49").net,200);
+  var lv={sport:"Football",league:"NCAAF",eventDate:"2026-09-05",awayTeam:"South Dakota",homeTeam:"NDSU",marketType:"Spread"};
+  var lad=comb([B(Object.assign({},lv,{betSide:"home",line:-6.5,stake:106,toWin:100,placedAt:"2026-09-01T10:00"})),B(Object.assign({},lv,{betSide:"home",line:-7,stake:100,toWin:105,placedAt:"2026-09-02T10:00"}))])[0];
+  eq("ladder kind",lad.kind,"Same-side ladder");eq("ladder lands on 7",reg(lad,"exactly 7").net,100);eq("ladder by 8+",reg(lad,"8+").net,205);
+  ok("same line same side stays separate",comb([B(Object.assign({},lv,{betSide:"home",line:-7,stake:100,toWin:105})),B(Object.assign({},lv,{betSide:"home",line:-7,stake:50,toWin:52,placedAt:"2026-09-02T10:00"}))]).length===0);
   ok("same-side duplicates stay separate",comb([B(Object.assign({},tv,{marketType:"Moneyline",betSide:"away",stake:100,toWin:120})),B(Object.assign({},tv,{marketType:"Moneyline",betSide:"away",stake:50,toWin:60,placedAt:"2026-09-02T10:00"}))]).length===0);
   console.log("=== "+p+" passed, "+f+" failed ===");return{passed:p,failed:f};
 }
@@ -513,7 +526,7 @@ function OpenBets({bets,allBets,filters,setFilters,books,holders,tags,settings,o
 }
 
 // ---- POSITION CARD (derived combined view; source bets stay intact) ----
-const POS_BADGE={"Arbitrage":{bg:"#0d1a0d",fg:"#22c55e",t:"ARBITRAGE"},"Middle":{bg:"#1a1530",fg:"#a78bfa",t:"MIDDLE"},"Hedged position":{bg:"#0d1520",fg:"#38bdf8",t:"HEDGE"},"Reversed position":{bg:"#2e2a1a",fg:"#f59e0b",t:"REVERSED"},"Locked loss":{bg:"#1a0d0d",fg:"#ef4444",t:"LOCKED LOSS"},"Flat / fully hedged":{bg:"#15151f",fg:"#a0a0b8",t:"FLAT"},"Two-sided exposure":{bg:"#1a1a2e",fg:"#818cf8",t:"TWO-SIDED"}};
+const POS_BADGE={"Arbitrage":{bg:"#0d1a0d",fg:"#22c55e",t:"ARBITRAGE"},"Middle":{bg:"#1a1530",fg:"#a78bfa",t:"MIDDLE"},"Hedged position":{bg:"#0d1520",fg:"#38bdf8",t:"HEDGE"},"Reversed position":{bg:"#2e2a1a",fg:"#f59e0b",t:"REVERSED"},"Locked loss":{bg:"#1a0d0d",fg:"#ef4444",t:"LOCKED LOSS"},"Flat / fully hedged":{bg:"#15151f",fg:"#a0a0b8",t:"FLAT"},"Two-sided exposure":{bg:"#1a1a2e",fg:"#818cf8",t:"TWO-SIDED"},"Same-side ladder":{bg:"#1a1a2e",fg:"#818cf8",t:"MULTI-LINE"}};
 function PositionCard({pos,isExp,onToggle,betBody,onSeparate}){
   const bd=POS_BADGE[pos.kind]||POS_BADGE["Two-sided exposure"];
   const em=DEFAULT_SPORTS.find(s=>s.name===pos.bets[0].sport)?.emoji||"";
