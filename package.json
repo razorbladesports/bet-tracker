@@ -1,0 +1,11 @@
+{
+  "name": "bet-tracker",
+  "private": true,
+  "scripts": { "test": "node tests/entry.cjs" },
+  "devDependencies": {
+    "@babel/standalone": "7.26.10",
+    "playwright": "1.58.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}
