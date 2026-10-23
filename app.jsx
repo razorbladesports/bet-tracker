@@ -927,11 +927,11 @@ function Dash({ bets, allBets, settings, filters, setFilters, books, holders, ta
               <div style={{ fontSize: 10, color: "#525280", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Largest liabilities</div>
               {topExpo.length === 0 ? <div style={{ fontSize: 12, color: "#525280", padding: "10px 0" }}>Nothing open</div> :
                 topExpo.map(x => {
-                  const b = x.p.bets[0];
+                  const b = x.bets[0];
                   return (
-                    <div key={x.p.key || b.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderTop: "1px solid #1a1a28" }}>
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#a0a0b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.p.combined ? x.p.eventLabel + " · " + x.p.marketType : b.selection}</span>
-                      <span style={{ fontSize: 12, fontFamily: MONO, fontWeight: 600, color: "#ef4444" }}>{fmtUsd(r2(posWorst(x.p)))}</span>
+                    <div key={x.key || b.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderTop: "1px solid #1a1a28" }}>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#a0a0b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.combined ? x.eventLabel + " · " + x.marketType : b.selection}</span>
+                      <span style={{ fontSize: 12, fontFamily: MONO, fontWeight: 600, color: "#ef4444" }}>{fmtUsd(r2(posWorst(x)))}</span>
                     </div>
                   );
                 })}
